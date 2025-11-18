@@ -58,7 +58,7 @@ Magick.configure do
   performance_metrics enabled: true
   audit_log enabled: true
   versioning enabled: true
-  warn_on_deprecated true
+  warn_on_deprecated enabled: true
 end
 ```
 
@@ -79,13 +79,13 @@ Magick.configure do
   circuit_breaker threshold: 5, timeout: 60
 
   # Async updates
-  async_updates true
+  async_updates enabled: true
 
   # Enable services
   performance_metrics enabled: true
   audit_log enabled: true
   versioning enabled: true
-  warn_on_deprecated true
+  warn_on_deprecated enabled: true
 end
 ```
 
