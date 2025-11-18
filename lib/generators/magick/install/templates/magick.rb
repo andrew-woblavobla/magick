@@ -16,7 +16,7 @@ Magick.configure do
   # circuit_breaker threshold: 5, timeout: 60
 
   # Enable async updates for Redis (non-blocking, improves performance)
-  # async_updates true
+  # async_updates enabled: true
 
   # Enable performance metrics tracking
   performance_metrics enabled: true
@@ -28,5 +28,5 @@ Magick.configure do
   versioning enabled: true
 
   # Enable deprecation warnings in logs
-  warn_on_deprecated true
+  warn_on_deprecated enabled: true
 end
