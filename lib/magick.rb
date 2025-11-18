@@ -23,9 +23,13 @@ require_relative 'magick/testing_helpers'
 require_relative 'magick/feature_dependency'
 require_relative 'magick/config'
 
+# Load DSL early if Rails is present, so it's available in initializers
+require_relative 'magick/dsl' if defined?(Rails)
+
 module Magick
   class << self
-    attr_accessor :adapter_registry, :default_adapter, :performance_metrics, :audit_log, :versioning, :warn_on_deprecated
+    attr_accessor :adapter_registry, :default_adapter, :performance_metrics, :audit_log, :versioning,
+                  :warn_on_deprecated
 
     def configure(&block)
       @performance_metrics ||= PerformanceMetrics.new
@@ -33,14 +37,14 @@ module Magick
       @warn_on_deprecated ||= false
 
       # Support both old style and new DSL style
-      if block_given?
-        if block.arity == 0
-          # New DSL style
-          ConfigDSL.configure(&block)
-        else
-          # Old style
-          yield self
-        end
+      return unless block_given?
+
+      if block.arity == 0
+        # New DSL style
+        ConfigDSL.configure(&block)
+      else
+        # Old style
+        yield self
       end
     end
 

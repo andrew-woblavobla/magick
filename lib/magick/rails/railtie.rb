@@ -8,6 +8,12 @@ if defined?(Rails)
   module Magick
     module Rails
       class Railtie < ::Rails::Railtie
+        # Make DSL available early so it works in config/initializers/features.rb
+        initializer 'magick.dsl', before: :load_config_initializers do
+          # Ensure DSL is available globally for initializers
+          Object.class_eval { include Magick::DSL } unless Object.included_modules.include?(Magick::DSL)
+        end
+
         initializer 'magick.configure' do |app|
           # Configure Magick with Rails-specific settings
           Magick.configure do |config|
@@ -26,11 +32,21 @@ if defined?(Rails)
           end
 
           # Load features from DSL file if it exists
+          # Supports both config/features.rb and config/initializers/features.rb
           config.after_initialize do
+            # Try config/features.rb first (recommended location)
             features_file = Rails.root.join('config', 'features.rb')
             if File.exist?(features_file)
               load features_file
+            else
+              # Fallback to config/initializers/features.rb (already loaded by Rails, but check anyway)
+              initializer_file = Rails.root.join('config', 'initializers', 'features.rb')
+              if File.exist?(initializer_file)
+                # Only load if not already loaded (Rails may have already loaded it)
+                load initializer_file unless defined?(Magick::Rails::FeaturesLoaded)
+              end
             end
+            Magick::Rails.const_set(:FeaturesLoaded, true) rescue nil
           end
         end
 

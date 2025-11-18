@@ -64,5 +64,8 @@ module Magick
   end
 end
 
-# Extend main object for DSL usage in config/features.rb
-extend Magick::DSL
+# Make DSL methods available at top level for config/features.rb and config/initializers/features.rb
+# Include into Object so methods are available as instance methods on main (top-level context)
+Object.class_eval do
+  include Magick::DSL unless included_modules.include?(Magick::DSL)
+end
