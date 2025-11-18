@@ -396,11 +396,9 @@ module Magick
     attr_reader :targeting
 
     def stored_value
-      # Use defined? to check if variable is set, since false is a valid value
-      unless instance_variable_defined?(:@stored_value)
-        @stored_value = load_value_from_adapter
-      end
-      @stored_value
+      # Always go through adapter to check for cross-process updates via version checking
+      # The adapter registry will check Redis version and invalidate memory cache if stale
+      load_value_from_adapter
     end
 
     # Reload feature state from adapter (useful when feature is changed externally)
@@ -417,6 +415,8 @@ module Magick
     end
 
     def load_from_adapter
+      # Clear cached value to force reload from adapter (which checks version)
+      @stored_value = nil
       @stored_value = load_value_from_adapter
       status_value = adapter_registry.get(name, 'status')
       @status = status_value ? status_value.to_sym : status

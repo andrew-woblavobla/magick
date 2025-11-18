@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    magick (0.5.0)
+    magick (0.6.0)
 
 GEM
   remote: https://rubygems.org/
