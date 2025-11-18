@@ -23,8 +23,8 @@ require_relative 'magick/testing_helpers'
 require_relative 'magick/feature_dependency'
 require_relative 'magick/config'
 
-# Load DSL early if Rails is present, so it's available in initializers
-require_relative 'magick/dsl' if defined?(Rails)
+# Always load DSL - it will make itself available when Rails is detected
+require_relative 'magick/dsl'
 
 module Magick
   class << self

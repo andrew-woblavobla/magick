@@ -2,7 +2,8 @@
 
 if defined?(Rails)
   require 'magick'
-  require 'magick/dsl'
+  # DSL is already loaded by magick.rb, but ensure it's available
+  require 'magick/dsl' unless defined?(Magick::DSL)
   require_relative 'events'
 
   module Magick

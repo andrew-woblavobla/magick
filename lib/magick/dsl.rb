@@ -75,6 +75,12 @@ end
 
 # Make DSL methods available at top level for config/features.rb and config/initializers/features.rb
 # Include into Object so methods are available as instance methods on main (top-level context)
-Object.class_eval do
-  include Magick::DSL unless included_modules.include?(Magick::DSL)
+# This needs to happen immediately when the file is loaded, not conditionally
+begin
+  Object.class_eval do
+    include Magick::DSL unless included_modules.include?(Magick::DSL)
+  end
+rescue StandardError => e
+  # Silently fail if Object isn't available yet (shouldn't happen, but be safe)
+  warn "Magick: Failed to include DSL: #{e.message}" if defined?(Rails) && Rails.env.development?
 end
