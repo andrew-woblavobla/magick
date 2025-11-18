@@ -26,3 +26,19 @@ feature :experimental_feature,
   default_value: false,
   status: :deprecated,
   description: "Experimental feature (deprecated, will be removed)"
+
+# Features with dependencies
+# A feature can depend on other features being enabled
+boolean_feature :advanced_feature,
+  default: false,
+  description: "Advanced feature that requires base_feature to be enabled",
+  dependencies: [:base_feature]
+
+# Multiple dependencies
+boolean_feature :premium_feature,
+  default: false,
+  description: "Premium feature requiring multiple base features",
+  dependencies: [:base_feature, :auth_feature]
+
+# You can also add dependencies after feature definition
+add_dependency(:another_feature, :required_feature)

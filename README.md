@@ -187,6 +187,21 @@ feature :experimental_feature,
   default_value: false,
   status: :deprecated,
   description: "Experimental feature (deprecated)"
+
+# With dependencies (feature will only be enabled if dependencies are enabled)
+boolean_feature :advanced_feature,
+  default: false,
+  description: "Advanced feature requiring base_feature",
+  dependencies: [:base_feature]
+
+# Multiple dependencies
+boolean_feature :premium_feature,
+  default: false,
+  description: "Premium feature requiring multiple features",
+  dependencies: [:base_feature, :auth_feature]
+
+# Add dependencies after feature definition
+add_dependency(:another_feature, :required_feature)
 ```
 
 ### In Controllers
