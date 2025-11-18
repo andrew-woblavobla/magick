@@ -3,13 +3,13 @@
 require_relative 'lib/magick/version'
 
 Gem::Specification.new do |spec|
-  spec.name          = 'magick'
+  spec.name          = 'magick-feature-flags'
   spec.version       = Magick::VERSION
   spec.authors       = ['Andrew Lobanov']
   spec.email         = ['woblavobla@gmail.com']
 
   spec.summary       = 'A performant and memory-efficient feature toggle gem'
-  spec.description   = 'Magick is a better version of Flipper feature-toggle gem. It is absolutely performant and memory efficient.'
+  spec.description   = 'Magick is a better free version of Flipper feature-toggle gem. It is absolutely performant and memory efficient (by my opinion).'
   spec.homepage      = 'https://github.com/andrew-woblavobla/magick'
   spec.license       = 'MIT'
 
