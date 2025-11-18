@@ -61,6 +61,15 @@ module Magick
     def add_dependency(feature_name, dependency_name)
       Magick[feature_name].add_dependency(dependency_name)
     end
+
+    # Enable/disable features globally
+    def enable_feature(feature_name, user_id: nil)
+      Magick[feature_name].enable(user_id: user_id)
+    end
+
+    def disable_feature(feature_name, user_id: nil)
+      Magick[feature_name].disable(user_id: user_id)
+    end
   end
 end
 

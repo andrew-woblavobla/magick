@@ -315,6 +315,50 @@ module Magick
       end
     end
 
+    def enable(user_id: nil)
+      # Clear all targeting to enable globally
+      @targeting = {}
+      save_targeting
+
+      case type
+      when :boolean
+        set_value(true, user_id: user_id)
+      when :string
+        raise InvalidFeatureValueError, "Cannot enable string feature. Use set_value instead."
+      when :number
+        raise InvalidFeatureValueError, "Cannot enable number feature. Use set_value instead."
+      else
+        raise InvalidFeatureValueError, "Cannot enable feature of type #{type}"
+      end
+
+      # Rails 8+ event
+      if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
+        Magick::Rails::Events.feature_enabled_globally(name, user_id: user_id)
+      end
+    end
+
+    def disable(user_id: nil)
+      # Clear all targeting to disable globally
+      @targeting = {}
+      save_targeting
+
+      case type
+      when :boolean
+        set_value(false, user_id: user_id)
+      when :string
+        set_value('', user_id: user_id)
+      when :number
+        set_value(0, user_id: user_id)
+      else
+        raise InvalidFeatureValueError, "Cannot disable feature of type #{type}"
+      end
+
+      # Rails 8+ event
+      if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
+        Magick::Rails::Events.feature_disabled_globally(name, user_id: user_id)
+      end
+    end
+
     def set_status(new_status)
       raise InvalidFeatureValueError, "Invalid status: #{new_status}" unless VALID_STATUSES.include?(new_status.to_sym)
 

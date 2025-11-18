@@ -135,6 +135,12 @@ Magick.register_feature(:max_results,
 ```ruby
 feature = Magick[:new_dashboard]
 
+# Enable globally (for everyone, no targeting)
+feature.enable
+
+# Disable globally (for everyone, no targeting)
+feature.disable
+
 # Enable for specific user
 feature.enable_for_user(123)
 
