@@ -296,6 +296,11 @@ module Magick
       adapter_registry.set(name, 'description', description) if description
       @stored_value = value
 
+      # Update registered feature instance if it exists
+      if Magick.features.key?(name)
+        Magick.features[name].instance_variable_set(:@stored_value, value)
+      end
+
       changes = { value: { from: old_value, to: value } }
 
       # Audit log
@@ -391,7 +396,24 @@ module Magick
     attr_reader :targeting
 
     def stored_value
-      @stored_value ||= load_value_from_adapter
+      # Use defined? to check if variable is set, since false is a valid value
+      unless instance_variable_defined?(:@stored_value)
+        @stored_value = load_value_from_adapter
+      end
+      @stored_value
+    end
+
+    # Reload feature state from adapter (useful when feature is changed externally)
+    def reload
+      load_from_adapter
+      # Update registered feature instance if it exists
+      if Magick.features.key?(name)
+        registered = Magick.features[name]
+        registered.instance_variable_set(:@stored_value, @stored_value)
+        registered.instance_variable_set(:@status, @status)
+        registered.instance_variable_set(:@targeting, @targeting.dup)
+      end
+      self
     end
 
     def load_from_adapter

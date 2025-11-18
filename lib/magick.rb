@@ -68,6 +68,12 @@ module Magick
       feature.enabled?(context)
     end
 
+    # Reload a feature from the adapter (useful when feature is changed externally)
+    def reload_feature(feature_name)
+      feature = features[feature_name.to_s] || self[feature_name]
+      feature.reload
+    end
+
     def disabled?(feature_name, context = {})
       !enabled?(feature_name, context)
     end
