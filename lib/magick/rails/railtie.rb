@@ -1,7 +1,8 @@
 # frozen_string_literal: true
 
 if defined?(Rails)
-  require 'magick'
+  # Ensure magick is loaded (in case auto-require didn't work)
+  require 'magick' unless defined?(Magick)
   # DSL is already loaded by magick.rb, but ensure it's available
   require 'magick/dsl' unless defined?(Magick::DSL)
   require_relative 'events'

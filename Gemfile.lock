@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    magick (0.7.0)
+    magick-feature-flags (0.7.4)
 
 GEM
   remote: https://rubygems.org/
@@ -70,7 +70,7 @@ PLATFORMS
   ruby
 
 DEPENDENCIES
-  magick!
+  magick-feature-flags!
   rake (~> 13.0)
   rspec (~> 3.12)
   rubocop (~> 1.50)
