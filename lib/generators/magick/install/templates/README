@@ -1,9 +1,5 @@
 == Magick Install Generator
 
-This generator creates a basic Magick configuration file at:
-
-  config/initializers/magick.rb
-
 The generated configuration includes:
 - Performance metrics tracking
 - Audit logging
@@ -24,3 +20,6 @@ Usage:
 For more information, see:
 - README.md
 - config/magick.rb.example
+
+This generator creates a basic Magick configuration file at:
+  config/initializers/magick.rb
