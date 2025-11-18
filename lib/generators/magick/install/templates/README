@@ -1,0 +1,26 @@
+== Magick Install Generator
+
+This generator creates a basic Magick configuration file at:
+
+  config/initializers/magick.rb
+
+The generated configuration includes:
+- Performance metrics tracking
+- Audit logging
+- Versioning support
+- Deprecation warnings
+
+Optional features (commented out by default):
+- Redis adapter configuration
+- Memory TTL customization
+- Circuit breaker settings
+- Async updates
+
+You can customize the configuration by editing the generated file.
+
+Usage:
+  rails generate magick:install
+
+For more information, see:
+- README.md
+- config/magick.rb.example

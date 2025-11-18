@@ -1,0 +1,28 @@
+# Example features configuration file
+# Copy this to config/features.rb in your Rails application
+
+# Boolean features
+boolean_feature :new_dashboard,
+  default: false,
+  description: "New dashboard UI with improved navigation"
+
+boolean_feature :dark_mode,
+  default: false,
+  description: "Dark mode theme support"
+
+# String features
+string_feature :api_version,
+  default: "v1",
+  description: "API version to use for requests"
+
+# Number features
+number_feature :max_results,
+  default: 10,
+  description: "Maximum number of results per page"
+
+# Features with status
+feature :experimental_feature,
+  type: :boolean,
+  default_value: false,
+  status: :deprecated,
+  description: "Experimental feature (deprecated, will be removed)"

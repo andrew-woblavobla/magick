@@ -1,0 +1,37 @@
+example_id                                     | status | run_time        |
+---------------------------------------------- | ------ | --------------- |
+./spec/magick/adapters/memory_spec.rb[1:1:1]   | passed | 0.00092 seconds |
+./spec/magick/adapters/memory_spec.rb[1:1:2]   | passed | 0.00064 seconds |
+./spec/magick/adapters/memory_spec.rb[1:2:1]   | passed | 0.00004 seconds |
+./spec/magick/adapters/memory_spec.rb[1:3:1]   | passed | 0.00004 seconds |
+./spec/magick/adapters/memory_spec.rb[1:3:2]   | passed | 0.00003 seconds |
+./spec/magick/adapters/memory_spec.rb[1:4:1]   | passed | 0.00147 seconds |
+./spec/magick/adapters/memory_spec.rb[1:5:1]   | passed | 0.00072 seconds |
+./spec/magick/adapters/registry_spec.rb[1:1:1] | passed | 0.00005 seconds |
+./spec/magick/adapters/registry_spec.rb[1:1:2] | passed | 0.00006 seconds |
+./spec/magick/adapters/registry_spec.rb[1:2:1] | passed | 0.00004 seconds |
+./spec/magick/adapters/registry_spec.rb[1:3:1] | passed | 0.00004 seconds |
+./spec/magick/feature_spec.rb[1:1:1]           | passed | 0.00006 seconds |
+./spec/magick/feature_spec.rb[1:1:2]           | passed | 0.00086 seconds |
+./spec/magick/feature_spec.rb[1:1:3]           | passed | 0.00005 seconds |
+./spec/magick/feature_spec.rb[1:2:1:1]         | passed | 0.00005 seconds |
+./spec/magick/feature_spec.rb[1:2:1:2]         | passed | 0.00004 seconds |
+./spec/magick/feature_spec.rb[1:2:2:1]         | passed | 0.00004 seconds |
+./spec/magick/feature_spec.rb[1:2:3:1]         | passed | 0.00004 seconds |
+./spec/magick/feature_spec.rb[1:2:3:2]         | passed | 0.00004 seconds |
+./spec/magick/feature_spec.rb[1:3:1]           | passed | 0.00007 seconds |
+./spec/magick/feature_spec.rb[1:4:1]           | passed | 0.00004 seconds |
+./spec/magick/feature_spec.rb[1:5:1]           | passed | 0.00004 seconds |
+./spec/magick/feature_spec.rb[1:6:1]           | passed | 0.00004 seconds |
+./spec/magick/feature_spec.rb[1:6:2]           | passed | 0.00004 seconds |
+./spec/magick/feature_spec.rb[1:7:1]           | passed | 0.00004 seconds |
+./spec/magick/feature_spec.rb[1:7:2]           | passed | 0.00004 seconds |
+./spec/magick/feature_spec.rb[1:8:1]           | passed | 0.00005 seconds |
+./spec/magick_spec.rb[1:1:1]                   | passed | 0.00044 seconds |
+./spec/magick_spec.rb[1:2:1:1]                 | passed | 0.00004 seconds |
+./spec/magick_spec.rb[1:2:1:2]                 | passed | 0.00004 seconds |
+./spec/magick_spec.rb[1:2:2:1]                 | passed | 0.00005 seconds |
+./spec/magick_spec.rb[1:2:3:1]                 | passed | 0.00107 seconds |
+./spec/magick_spec.rb[1:3:1]                   | passed | 0.00004 seconds |
+./spec/magick_spec.rb[1:3:2]                   | passed | 0.00004 seconds |
+./spec/magick_spec.rb[1:4:1]                   | passed | 0.00089 seconds |

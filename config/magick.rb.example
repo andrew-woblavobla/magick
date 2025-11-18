@@ -1,0 +1,50 @@
+# Magick Configuration DSL
+# Copy this to config/initializers/magick.rb in your Rails application
+
+Magick.configure do
+  # Configure environment
+  environment Rails.env
+
+  # Configure memory adapter TTL (default: 3600 seconds)
+  memory_ttl 7200 # 2 hours
+
+  # Configure Redis adapter
+  redis url: ENV['REDIS_URL'], namespace: 'magick:features'
+
+  # Configure circuit breaker
+  circuit_breaker threshold: 5, timeout: 60
+
+  # Enable async updates for Redis (non-blocking)
+  async_updates true
+
+  # Enable performance metrics tracking
+  performance_metrics enabled: true
+
+  # Enable audit logging
+  audit_log enabled: true
+
+  # Enable versioning support
+  versioning enabled: true
+
+  # Enable deprecation warnings
+  warn_on_deprecated true
+end
+
+# Alternative simpler configuration:
+# Magick.configure do
+#   redis url: ENV['REDIS_URL']
+#   performance_metrics enabled: true
+#   audit_log enabled: true
+# end
+
+# Advanced configuration with nested adapter setup:
+# Magick.configure do
+#   adapter :registry do
+#     memory_ttl 3600
+#     redis url: ENV['REDIS_URL']
+#     async_updates true
+#     circuit_breaker threshold: 5, timeout: 60
+#   end
+#   performance_metrics enabled: true
+#   audit_log enabled: true
+# end
