@@ -293,9 +293,25 @@ end
 Magick uses a dual-adapter strategy:
 
 1. **Memory Adapter**: Fast, in-memory storage with TTL support
-2. **Redis Adapter**: Persistent storage for distributed systems
+2. **Redis Adapter**: Persistent storage for distributed systems (optional)
 
 The registry automatically falls back from memory to Redis if a feature isn't found in memory. When features are updated, both adapters are updated simultaneously.
+
+#### Memory-Only Mode
+
+If Redis is not configured, Magick works in **memory-only mode**:
+- ✅ Fast, zero external dependencies
+- ✅ Perfect for single-process applications or development
+- ⚠️ **No cross-process cache invalidation** - each process has isolated cache
+- ⚠️ Changes in one process won't be reflected in other processes
+
+#### Redis Mode (Recommended for Production)
+
+With Redis configured:
+- ✅ Cross-process cache invalidation via Redis Pub/Sub
+- ✅ Persistent storage across restarts
+- ✅ Zero Redis calls on feature checks (only memory lookups)
+- ✅ Automatic cache invalidation when features change in any process
 
 ### Feature Types
 
