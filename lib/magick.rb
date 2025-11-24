@@ -175,8 +175,7 @@ module Magick
       @performance_metrics&.clear!
     end
 
-    private
-
+    # Get default adapter registry (public method for use by other classes)
     def default_adapter_registry
       @default_adapter_registry ||= begin
         memory_adapter = Adapters::Memory.new
@@ -188,5 +187,7 @@ module Magick
         Adapters::Registry.new(memory_adapter, redis_adapter)
       end
     end
+
+    private
   end
 end

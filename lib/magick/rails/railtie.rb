@@ -16,19 +16,24 @@ if defined?(Rails)
           Object.class_eval { include Magick::DSL } unless Object.included_modules.include?(Magick::DSL)
         end
 
-        initializer 'magick.configure' do |app|
-          # Configure Magick with Rails-specific settings
-          Magick.configure do |config|
-            # Use Redis if available, otherwise fall back to memory
-            if defined?(Redis)
-              begin
-                redis_url = app.config.respond_to?(:redis_url) ? app.config.redis_url : nil
-                redis_client = redis_url ? ::Redis.new(url: redis_url) : ::Redis.new
-                memory_adapter = Adapters::Memory.new
-                redis_adapter = Adapters::Redis.new(redis_client)
-                config.adapter_registry = Adapters::Registry.new(memory_adapter, redis_adapter)
-              rescue StandardError => e
-                Rails.logger&.warn "Magick: Failed to initialize Redis adapter: #{e.message}. Using memory-only adapter."
+        initializer 'magick.configure', before: :load_config_initializers do |app|
+          # Configure Magick with Rails-specific settings (only if not already configured)
+          # This allows user's config/initializers/magick.rb to override these defaults
+          unless Magick.adapter_registry
+            Magick.configure do |magick|
+              # Use Redis if available, otherwise fall back to memory
+              if defined?(Redis)
+                begin
+                  redis_url = app.config.respond_to?(:redis_url) ? app.config.redis_url : nil
+                  redis_client = redis_url ? ::Redis.new(url: redis_url) : ::Redis.new
+                  memory_adapter = Adapters::Memory.new
+                  redis_adapter = Adapters::Redis.new(redis_client)
+                  magick.adapter_registry = Adapters::Registry.new(memory_adapter, redis_adapter)
+                  # Re-apply Redis tracking if performance metrics exists
+                  Magick.reapply_redis_tracking! if Magick.performance_metrics
+                rescue StandardError => e
+                  Rails.logger&.warn "Magick: Failed to initialize Redis adapter: #{e.message}. Using memory-only adapter."
+                end
               end
             end
           end
