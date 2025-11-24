@@ -52,11 +52,12 @@ module Magick
       return check_enabled(context) unless perf_metrics_enabled
 
       # Performance metrics enabled: measure and record
+      # Use inline timing to avoid function call overhead
       start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       result = check_enabled(context)
       duration = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time) * 1000 # milliseconds
 
-      # Record metrics (only if enabled)
+      # Record metrics (fast path - minimal overhead)
       perf_metrics.record(name, 'enabled?', duration, success: true)
 
       # Rails 8+ events (only in development or when explicitly enabled)

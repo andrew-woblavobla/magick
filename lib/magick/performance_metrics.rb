@@ -36,44 +36,113 @@ module Magick
       # If redis_enabled is explicitly set, use it; otherwise default to false
       # It will be enabled later via enable_redis_tracking if Redis adapter is available
       @redis_enabled = redis_enabled.nil? ? false : redis_enabled
+      # Cache expensive checks for performance
+      @_rails_events_enabled = defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
+      @_adapter_available = nil # Will be cached on first check
+      @_redis_available = nil # Will be cached on first check
+
+      # Async recording queue for non-blocking metrics
+      @async_queue = Queue.new
+      @async_thread = nil
+      @async_enabled = true # Enable async by default for performance
+      start_async_processor
     end
 
     # Public accessor for redis_enabled
     attr_reader :redis_enabled
 
     def record(feature_name, operation, duration, success: true)
-      feature_name_str = feature_name.to_s
-      metric = Metric.new(feature_name_str, operation, duration, success: success)
+      # Fast path: push to async queue (non-blocking, zero overhead in hot path)
+      # Queue#<< is thread-safe and lock-free - extremely fast!
+      return unless @async_enabled
 
+      # Push to async queue - this is lock-free and extremely fast
+      # Use non-blocking push (will raise if queue is full, but our queue is unbounded)
+      begin
+        @async_queue << [feature_name.to_s, operation.to_s, duration, success]
+      rescue ThreadError, ClosedQueueError
+        # Queue is closed or thread died, disable async
+        @async_enabled = false
+      end
+
+      nil
+    end
+
+    # Internal: Process metrics from async queue (runs in background thread)
+    def process_async_record(feature_name_str, operation_str, duration, success)
+      # Minimize mutex lock time - only update counters
+      pending_count = nil
+      total_pending = nil
       @mutex.synchronize do
-        @metrics << metric
+        # Only create Metric object if we're keeping metrics in memory
+        if @metrics.length < 1000
+          metric = Metric.new(feature_name_str, operation_str, duration, success: success)
+          @metrics << metric
+        end
         @usage_count[feature_name_str] += 1
         @pending_updates[feature_name_str] += 1
+        pending_count = @pending_updates[feature_name_str]
+        total_pending = @pending_updates.values.sum
         # Keep only last 1000 metrics (as a safety limit)
-        # Note: Metrics are removed from memory after flushing to Redis to reduce memory usage
         @metrics.shift if @metrics.length > 1000
       end
 
-      # Rails 8+ event for usage tracking
-      if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
-        Magick::Rails::Events.usage_tracked(feature_name, operation: operation, duration: duration, success: success)
+      # Rails 8+ event for usage tracking (cached check)
+      if @_rails_events_enabled
+        Magick::Rails::Events.usage_tracked(feature_name_str, operation: operation_str, duration: duration,
+                                                              success: success)
       end
 
-      # Batch flush to Redis if needed
-      flush_to_redis_if_needed
+      # Batch flush check - only if we're close to batch size
+      flush_to_redis_if_needed if pending_count >= @batch_size || total_pending >= @batch_size
+    end
 
-      metric
+    # Start background thread to process async metrics
+    def start_async_processor
+      return if @async_thread&.alive?
+
+      @async_thread = Thread.new do
+        last_flush_check = Time.now
+        loop do
+          # Wait for metrics with timeout to allow periodic flush checks
+          # Queue#pop with timeout returns nil on timeout, raises on closed queue
+          begin
+            data = @async_queue.pop(timeout: 1.0)
+          rescue ThreadError => e
+            # Queue closed or thread interrupted
+            break if e.message.include?('queue closed')
+
+            raise
+          end
+
+          if data
+            feature_name_str, operation_str, duration, success = data
+            process_async_record(feature_name_str, operation_str, duration, success)
+            last_flush_check = Time.now
+          elsif Time.now - last_flush_check >= 1.0
+            # Timeout - check if we need to flush based on time (every second)
+            flush_to_redis_if_needed
+            last_flush_check = Time.now
+          end
+        rescue StandardError => e
+          # Log error but continue processing
+          warn "Magick: Error in async metrics processor: #{e.message}" if defined?(Rails) && Rails.env.development?
+          sleep 0.1 # Brief pause on error
+        end
+      end
+      @async_thread.abort_on_exception = false
     end
 
     def flush_to_redis_if_needed
-      # Always try to flush if Redis adapter is available, even if @redis_enabled is false
-      # This ensures stats are collected even if redis_enabled wasn't set correctly
-      adapter = Magick.adapter_registry || Magick.default_adapter_registry
-      return unless adapter # No adapter at all, skip
+      # Cache adapter availability check (expensive)
+      if @_adapter_available.nil?
+        adapter = Magick.adapter_registry || Magick.default_adapter_registry
+        @_adapter_available = adapter
+        @_redis_available = adapter.is_a?(Magick::Adapters::Registry) && adapter.redis_available? if adapter
+      end
 
-      redis_available = adapter.is_a?(Magick::Adapters::Registry) && adapter.redis_available?
-
-      return unless redis_available || @redis_enabled
+      return unless @_adapter_available
+      return unless @_redis_available || @redis_enabled
       return if @pending_updates.empty?
 
       should_flush = false
@@ -310,6 +379,14 @@ module Magick
         @pending_updates.clear
         @flushed_counts.clear
       end
+    end
+
+    # Stop async processor (for cleanup)
+    def stop_async_processor
+      @async_enabled = false
+      @async_queue.close if @async_queue.respond_to?(:close)
+      @async_thread&.kill
+      @async_thread = nil
     end
   end
 end
