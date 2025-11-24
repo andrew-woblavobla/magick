@@ -57,6 +57,7 @@ module Magick
         @performance_metrics.enable_redis_tracking(enable: false)
       end
       # If nil, will be auto-determined in apply! method
+      @performance_metrics
     end
 
     def audit_log(enabled: true, adapter: nil)
@@ -93,21 +94,23 @@ module Magick
     def apply!
       # Apply configuration to Magick module
       Magick.adapter_registry = adapter_registry if adapter_registry
-      Magick.performance_metrics = performance_metrics if performance_metrics
-      Magick.audit_log = audit_log if audit_log
-      Magick.versioning = versioning if versioning
-      Magick.warn_on_deprecated = warn_on_deprecated
 
-      # Enable Redis tracking for performance metrics
-      if Magick.performance_metrics
-        # If redis_tracking was explicitly set, use that value
+      # Apply performance metrics (preserve redis_tracking setting)
+      if performance_metrics
+        Magick.performance_metrics = performance_metrics
+        # Re-apply redis_tracking setting after assignment (in case object was replaced)
         if defined?(@performance_metrics_redis_tracking) && !@performance_metrics_redis_tracking.nil?
           Magick.performance_metrics.enable_redis_tracking(enable: @performance_metrics_redis_tracking)
         # Otherwise, auto-enable if Redis adapter is configured
-        elsif adapter_registry.is_a?(Adapters::Registry) && adapter_registry.redis_adapter
+        # Check Magick.adapter_registry (after it's been set) instead of local instance variable
+        elsif Magick.adapter_registry.is_a?(Adapters::Registry) && Magick.adapter_registry.redis_available?
           Magick.performance_metrics.enable_redis_tracking(enable: true)
         end
       end
+
+      Magick.audit_log = audit_log if audit_log
+      Magick.versioning = versioning if versioning
+      Magick.warn_on_deprecated = warn_on_deprecated
     end
 
     private

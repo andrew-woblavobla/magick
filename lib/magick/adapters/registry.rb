@@ -92,6 +92,11 @@ module Magick
         publish_cache_invalidation(feature_name)
       end
 
+      # Check if Redis adapter is available
+      def redis_available?
+        !redis_adapter.nil?
+      end
+
       private
 
       attr_reader :memory_adapter, :redis_adapter, :circuit_breaker

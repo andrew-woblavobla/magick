@@ -128,6 +128,14 @@ module Magick
       @versioning ||= Versioning.new(adapter_registry || default_adapter_registry)
     end
 
+    # Manually enable Redis tracking for performance metrics
+    # Useful if Redis adapter becomes available after initial configuration
+    def enable_redis_tracking(enable: true)
+      return unless performance_metrics
+
+      performance_metrics.enable_redis_tracking(enable: enable)
+    end
+
     # Get total usage count for a feature (combines memory and Redis counts)
     def feature_stats(feature_name)
       return {} unless performance_metrics
