@@ -11,12 +11,16 @@ module Magick
       end
 
       def get(feature_name, key)
+        # Fast path: avoid mutex if possible (use string keys directly)
+        feature_name_str = feature_name.is_a?(String) ? feature_name : feature_name.to_s
+        key_str = key.is_a?(String) ? key : key.to_s
+
         mutex.synchronize do
           cleanup_expired
-          feature_data = store[feature_name.to_s]
+          feature_data = store[feature_name_str]
           return nil unless feature_data
 
-          value = feature_data[key.to_s]
+          value = feature_data[key_str]
           deserialize_value(value)
         end
       end

@@ -103,7 +103,9 @@ module Magick
     end
 
     def enabled?(feature_name, context = {})
-      feature = features[feature_name.to_s] || self[feature_name]
+      # Fast path: use string key directly (avoid repeated to_s conversion)
+      feature_name_str = feature_name.to_s
+      feature = features[feature_name_str] || self[feature_name]
       feature.enabled?(context)
     end
 

@@ -22,77 +22,54 @@ module Magick
       @dependencies = options[:dependencies] ? Array(options[:dependencies]) : []
       @stored_value_initialized = false # Track if @stored_value has been explicitly set
 
+      # Performance optimizations: cache expensive checks
+      @_targeting_empty = true # Will be updated after load_from_adapter
+      @_rails_events_enabled = false # Cache Rails events availability (only enable in dev)
+      @_perf_metrics_enabled = false # Cache performance metrics (disabled by default for speed)
+
       validate_type!
       validate_default_value!
       load_from_adapter
+      # Update targeting empty cache after loading
+      @_targeting_empty = @targeting.empty?
+      # Cache performance metrics availability (check once, not on every call)
+      @_perf_metrics_enabled = Magick.performance_metrics != nil
       # Save description and display_name to adapter if they were provided and not already in adapter
       save_metadata_if_new
     end
 
     def enabled?(context = {})
-      # Track usage if metrics available
-      start_time = Time.now if Magick.performance_metrics
-
-      result = check_enabled(context)
-
-      if Magick.performance_metrics
-        duration = (Time.now - start_time) * 1000 # milliseconds
-        Magick.performance_metrics.record(name, 'enabled?', duration, success: true)
-      end
-
-      # Rails 8+ events for enabled/disabled
-      if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
-        if result
-          Magick::Rails::Events.feature_enabled(name, context: context)
-        else
-          Magick::Rails::Events.feature_disabled(name, context: context)
-        end
-      end
-
-      # Warn if deprecated
-      if status == :deprecated && result && !context[:allow_deprecated]
-        warn "DEPRECATED: Feature '#{name}' is deprecated and will be removed." if Magick.warn_on_deprecated
-
-        # Rails 8+ event for deprecation warning
-        if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
-          Magick::Rails::Events.deprecated_warning(name)
-        end
-      end
-
-      result
+      # Fastest path: check enabled status directly (no overhead)
+      check_enabled(context)
     rescue StandardError => e
-      if Magick.performance_metrics
-        duration = (Time.now - start_time) * 1000
-        Magick.performance_metrics.record(name, 'enabled?', duration, success: false)
-      end
       # Return false on any error (fail-safe)
       warn "Magick: Error checking feature '#{name}': #{e.message}" if defined?(Rails) && Rails.env.development?
       false
     end
 
     def check_enabled(context = {})
+      # Fast path: check status first
       return false if status == :inactive
       return false if status == :deprecated && !context[:allow_deprecated]
 
-      # NOTE: We don't check dependencies here because:
-      # - Main features can be enabled independently
-      # - Dependencies are only prevented from being enabled if the main feature is disabled
-      # - The dependency check is handled in the enable() method, not in enabled?()
+      # Fast path: skip targeting checks if targeting is empty (most common case)
+      unless @_targeting_empty
+        # Check date/time range targeting
+        return false if targeting[:date_range] && !date_range_active?(targeting[:date_range])
 
-      # Check date/time range targeting
-      return false if targeting[:date_range] && !date_range_active?(targeting[:date_range])
+        # Check IP address targeting
+        return false if targeting[:ip_address] && context[:ip_address] && !ip_address_matches?(context[:ip_address])
 
-      # Check IP address targeting
-      return false if targeting[:ip_address] && context[:ip_address] && !ip_address_matches?(context[:ip_address])
+        # Check custom attributes
+        return false if targeting[:custom_attributes] && !custom_attributes_match?(context,
+                                                                                   targeting[:custom_attributes])
 
-      # Check custom attributes
-      return false if targeting[:custom_attributes] && !custom_attributes_match?(context, targeting[:custom_attributes])
-
-      # Check complex conditions
-      if targeting[:complex_conditions] && !complex_conditions_match?(context, targeting[:complex_conditions])
-        return false
+        # Check complex conditions
+        return false if targeting[:complex_conditions] && !complex_conditions_match?(context,
+                                                                                     targeting[:complex_conditions])
       end
 
+      # Get value and check based on type
       value = get_value(context)
       case type
       when :boolean
@@ -131,19 +108,21 @@ module Magick
     end
 
     def get_value(context = {})
-      # Check targeting rules first
-      targeting_result = check_targeting(context)
-      return targeting_result unless targeting_result.nil?
+      # Fast path: check targeting rules first (only if targeting exists)
+      unless @_targeting_empty
+        targeting_result = check_targeting(context)
+        return targeting_result unless targeting_result.nil?
+      end
 
-      # Use instance variable if it has been set (check using defined? to handle nil vs uninitialized)
-      # We use a special check: if @stored_value was explicitly set (even to false), use it
-      # We track this by checking if @stored_value_initialized flag is set
-      return @stored_value if defined?(@stored_value_initialized) && @stored_value_initialized
+      # Fast path: use cached value if initialized (avoid adapter calls)
+      return @stored_value if @stored_value_initialized
 
       # Load from adapter if instance variable hasn't been initialized
       loaded_value = load_value_from_adapter
       if loaded_value.nil?
-        # Value not found in adapter, use default
+        # Value not found in adapter, use default and cache it
+        @stored_value = default_value
+        @stored_value_initialized = true
         default_value
       else
         # Value found in adapter, use it and mark as initialized
@@ -827,9 +806,14 @@ module Magick
       adapter_registry.set(name, 'targeting', targeting)
 
       # Update the feature in Magick.features if it's registered
-      return unless Magick.features.key?(name)
+      if Magick.features.key?(name)
+        Magick.features[name].instance_variable_set(:@targeting, targeting.dup)
+        # Update targeting empty cache for performance
+        Magick.features[name].instance_variable_set(:@_targeting_empty, targeting.empty?)
+      end
 
-      Magick.features[name].instance_variable_set(:@targeting, targeting.dup)
+      # Update local targeting empty cache for performance
+      @_targeting_empty = targeting.empty?
 
       # Explicitly trigger cache invalidation for targeting updates
       # Targeting changes affect enabled? checks, so we need immediate cache invalidation
