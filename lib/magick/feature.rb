@@ -126,8 +126,11 @@ module Magick
       targeting_result = check_targeting(context)
       return targeting_result unless targeting_result.nil?
 
-      # Fall back to stored value or default
-      stored_value || default_value
+      # Use instance variable if set, otherwise load from adapter
+      # This ensures we use the most recent value set via set_value/disable/enable
+      value = @stored_value
+      value = load_value_from_adapter if value.nil?
+      value || default_value
     end
 
     def enable_for_user(user_id)
