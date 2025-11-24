@@ -378,6 +378,21 @@ module Magick
     end
 
     def enable(user_id: nil)
+      # Check if this feature is a dependency of any disabled features
+      # If a main feature that depends on this feature is disabled, prevent enabling this dependency
+      dependent_features = find_dependent_features
+      disabled_dependents = dependent_features.select do |dep_feature_name|
+        dep_feature = Magick.features[dep_feature_name.to_s] || Magick[dep_feature_name]
+        # Check if the dependent feature (main feature) is disabled
+        dep_feature && !dep_feature.enabled?
+      end
+
+      unless disabled_dependents.empty?
+        # Return false if any main feature that depends on this feature is disabled
+        # This prevents enabling a dependency when the main feature is disabled
+        return false
+      end
+
       # Clear all targeting to enable globally
       @targeting = {}
       save_targeting
