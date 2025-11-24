@@ -97,6 +97,13 @@ module Magick
         !redis_adapter.nil?
       end
 
+      # Get Redis client (public method for use by other classes)
+      def redis_client
+        return nil unless redis_adapter
+
+        redis_adapter.instance_variable_get(:@redis)
+      end
+
       private
 
       attr_reader :memory_adapter, :redis_adapter, :circuit_breaker

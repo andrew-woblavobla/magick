@@ -65,9 +65,7 @@ module Magick
       should_flush = false
       @mutex.synchronize do
         # Flush if we have enough pending updates or enough time has passed
-        if @pending_updates.size >= @batch_size || (Time.now - @last_flush) >= @flush_interval
-          should_flush = true
-        end
+        should_flush = true if @pending_updates.size >= @batch_size || (Time.now - @last_flush) >= @flush_interval
       end
 
       flush_to_redis if should_flush
@@ -88,13 +86,13 @@ module Magick
       # Update Redis in batch
       begin
         adapter = Magick.adapter_registry || Magick.default_adapter_registry
-        if adapter.is_a?(Magick::Adapters::Registry) && adapter.redis_adapter
-          redis = adapter.redis_adapter.instance_variable_get(:@redis)
+        if adapter.is_a?(Magick::Adapters::Registry) && adapter.redis_available?
+          redis = adapter.redis_client
           if redis
             updates_to_flush.each do |feature_name, count|
               redis_key = "magick:stats:#{feature_name}"
               redis.incrby(redis_key, count)
-              redis.expire(redis_key, 86400 * 7) # Keep stats for 7 days
+              redis.expire(redis_key, 86_400 * 7) # Keep stats for 7 days
             end
           end
         end
@@ -130,8 +128,8 @@ module Magick
       if @redis_enabled
         begin
           adapter = Magick.adapter_registry || Magick.default_adapter_registry
-          if adapter.is_a?(Magick::Adapters::Registry) && adapter.redis_adapter
-            redis = adapter.redis_adapter.instance_variable_get(:@redis)
+          if adapter.is_a?(Magick::Adapters::Registry) && adapter.redis_available?
+            redis = adapter.redis_client
             if redis
               redis_key = "magick:stats:#{feature_name_str}"
               redis_count = redis.get(redis_key).to_i
@@ -152,11 +150,11 @@ module Magick
       if @redis_enabled
         begin
           adapter = Magick.adapter_registry || Magick.default_adapter_registry
-          if adapter.is_a?(Magick::Adapters::Registry) && adapter.redis_adapter
-            redis = adapter.redis_adapter.instance_variable_get(:@redis)
+          if adapter.is_a?(Magick::Adapters::Registry) && adapter.redis_available?
+            redis = adapter.redis_client
             if redis
               # Get all stats keys
-              redis.keys("magick:stats:*").each do |key|
+              redis.keys('magick:stats:*').each do |key|
                 feature_name = key.to_s.sub('magick:stats:', '')
                 redis_count = redis.get(key).to_i
                 combined_counts[feature_name] = (combined_counts[feature_name] || 0) + redis_count
