@@ -74,8 +74,10 @@ module Magick
       return false if status == :inactive
       return false if status == :deprecated && !context[:allow_deprecated]
 
-      # Check feature dependencies
-      return false if !dependencies.empty? && !dependencies.all? { |dep_name| Magick.enabled?(dep_name, context) }
+      # Note: We don't check dependencies here because:
+      # - Main features can be enabled independently
+      # - Dependencies are only prevented from being enabled if the main feature is disabled
+      # - The dependency check is handled in the enable() method, not in enabled?()
 
       # Check date/time range targeting
       return false if targeting[:date_range] && !date_range_active?(targeting[:date_range])
@@ -380,6 +382,7 @@ module Magick
     def enable(user_id: nil)
       # Check if this feature is a dependency of any disabled features
       # If a main feature that depends on this feature is disabled, prevent enabling this dependency
+      # Dependencies cannot be enabled until the main feature is enabled
       dependent_features = find_dependent_features
       disabled_dependents = dependent_features.select do |dep_feature_name|
         dep_feature = Magick.features[dep_feature_name.to_s] || Magick[dep_feature_name]
