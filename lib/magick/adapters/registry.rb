@@ -86,6 +86,12 @@ module Magick
         (memory_features + redis_features).uniq
       end
 
+      # Explicitly trigger cache invalidation for a feature
+      # This is useful for targeting updates that need immediate cache invalidation
+      def invalidate_cache(feature_name)
+        publish_cache_invalidation(feature_name)
+      end
+
       private
 
       attr_reader :memory_adapter, :redis_adapter, :circuit_breaker

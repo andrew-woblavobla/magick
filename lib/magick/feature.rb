@@ -74,7 +74,7 @@ module Magick
       return false if status == :inactive
       return false if status == :deprecated && !context[:allow_deprecated]
 
-      # Note: We don't check dependencies here because:
+      # NOTE: We don't check dependencies here because:
       # - Main features can be enabled independently
       # - Dependencies are only prevented from being enabled if the main feature is disabled
       # - The dependency check is handled in the enable() method, not in enabled?()
@@ -463,6 +463,7 @@ module Magick
     def delete
       adapter_registry.delete(name)
       @stored_value = nil
+      @stored_value_initialized = false # Reset initialization flag so get_value returns default_value
       @targeting = {}
       # Also remove from Magick.features if registered
       Magick.features.delete(name.to_s)
@@ -822,11 +823,20 @@ module Magick
     end
 
     def save_targeting
+      # Save targeting to adapter (this triggers cache invalidation via Pub/Sub)
       adapter_registry.set(name, 'targeting', targeting)
+
       # Update the feature in Magick.features if it's registered
       return unless Magick.features.key?(name)
 
       Magick.features[name].instance_variable_set(:@targeting, targeting.dup)
+
+      # Explicitly trigger cache invalidation for targeting updates
+      # Targeting changes affect enabled? checks, so we need immediate cache invalidation
+      # even if async updates are enabled
+      return unless adapter_registry.respond_to?(:invalidate_cache)
+
+      adapter_registry.invalidate_cache(name)
     end
 
     def default_for_type
