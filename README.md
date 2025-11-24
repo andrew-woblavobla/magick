@@ -166,6 +166,55 @@ feature.enable_for_ip_addresses('192.168.1.0/24', '10.0.0.1')
 feature.enable_for_custom_attribute(:subscription_tier, ['premium', 'enterprise'])
 ```
 
+### Checking Feature Enablement with Objects
+
+You can check if a feature is enabled for an object (like a User model) and its fields:
+
+```ruby
+# Using enabled_for? with an object
+user = User.find(123)
+if Magick.enabled_for?(:premium_features, user)
+  # Feature is enabled for this user
+end
+
+# Or using the feature directly
+feature = Magick[:premium_features]
+if feature.enabled_for?(user)
+  # Feature is enabled for this user
+end
+
+# With additional context
+if Magick.enabled_for?(:premium_features, user, ip_address: request.remote_ip)
+  # Feature is enabled for this user and IP
+end
+
+# Works with ActiveRecord objects, hashes, or simple IDs
+Magick.enabled_for?(:feature, user)           # ActiveRecord object
+Magick.enabled_for?(:feature, { id: 123, role: 'admin' })  # Hash
+Magick.enabled_for?(:feature, 123)            # Simple ID
+```
+
+The `enabled_for?` method automatically extracts:
+- `user_id` from `id` or `user_id` attribute
+- `group` from `group` attribute
+- `role` from `role` attribute
+- `ip_address` from `ip_address` attribute
+- All other attributes for custom attribute matching
+
+### Return Values
+
+All enable/disable methods now return `true` to indicate success:
+
+```ruby
+# All these methods return true on success
+result = feature.enable                    # => true
+result = feature.disable                   # => true
+result = feature.enable_for_user(123)      # => true
+result = feature.enable_for_group('beta')  # => true
+result = feature.enable_percentage_of_users(25)  # => true
+result = feature.set_value(true)          # => true
+```
+
 ### DSL Configuration
 
 Create `config/features.rb`:

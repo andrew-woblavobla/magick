@@ -15,15 +15,15 @@ RSpec.describe Magick::Feature do
     end
 
     it 'raises error for invalid type' do
-      expect {
+      expect do
         described_class.new(:invalid, adapter_registry, type: :invalid_type, default_value: false)
-      }.to raise_error(Magick::InvalidFeatureTypeError)
+      end.to raise_error(Magick::InvalidFeatureTypeError)
     end
 
     it 'raises error for invalid default value' do
-      expect {
+      expect do
         described_class.new(:invalid, adapter_registry, type: :boolean, default_value: 'not boolean')
-      }.to raise_error(Magick::InvalidFeatureValueError)
+      end.to raise_error(Magick::InvalidFeatureValueError)
     end
   end
 
@@ -40,7 +40,9 @@ RSpec.describe Magick::Feature do
     end
 
     context 'with inactive status' do
-      let(:feature) { described_class.new(:inactive, adapter_registry, type: :boolean, default_value: true, status: :inactive) }
+      let(:feature) do
+        described_class.new(:inactive, adapter_registry, type: :boolean, default_value: true, status: :inactive)
+      end
 
       it 'returns false even if value is true' do
         expect(feature.enabled?).to be false
@@ -48,7 +50,9 @@ RSpec.describe Magick::Feature do
     end
 
     context 'with deprecated status' do
-      let(:feature) { described_class.new(:deprecated, adapter_registry, type: :boolean, default_value: true, status: :deprecated) }
+      let(:feature) do
+        described_class.new(:deprecated, adapter_registry, type: :boolean, default_value: true, status: :deprecated)
+      end
 
       it 'returns false by default' do
         expect(feature.enabled?).to be false
@@ -91,9 +95,9 @@ RSpec.describe Magick::Feature do
     end
 
     it 'raises error for invalid value type' do
-      expect {
+      expect do
         feature.set_value('not boolean')
-      }.to raise_error(Magick::InvalidFeatureValueError)
+      end.to raise_error(Magick::InvalidFeatureValueError)
     end
   end
 
@@ -104,9 +108,9 @@ RSpec.describe Magick::Feature do
     end
 
     it 'raises error for invalid status' do
-      expect {
+      expect do
         feature.set_status(:invalid_status)
-      }.to raise_error(Magick::InvalidFeatureValueError)
+      end.to raise_error(Magick::InvalidFeatureValueError)
     end
   end
 

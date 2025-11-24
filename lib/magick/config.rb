@@ -2,9 +2,8 @@
 
 module Magick
   class Config
-    attr_accessor :adapter_registry, :performance_metrics, :audit_log, :versioning
-    attr_accessor :warn_on_deprecated, :async_updates, :memory_ttl, :circuit_breaker_threshold
-    attr_accessor :circuit_breaker_timeout, :redis_url, :redis_namespace, :environment
+    attr_accessor :adapter_registry, :performance_metrics, :audit_log, :versioning, :warn_on_deprecated,
+                  :async_updates, :memory_ttl, :circuit_breaker_threshold, :circuit_breaker_timeout, :redis_url, :redis_namespace, :environment
 
     def initialize
       @warn_on_deprecated = false
@@ -45,28 +44,18 @@ module Magick
       configure_redis_adapter(url: url, namespace: namespace, **options)
     end
 
-    def performance_metrics(enabled: true, **options)
-      if enabled
-        @performance_metrics = PerformanceMetrics.new
-      else
-        @performance_metrics = nil
-      end
+    def performance_metrics(enabled: true, **_options)
+      @performance_metrics = (PerformanceMetrics.new if enabled)
     end
 
     def audit_log(enabled: true, adapter: nil)
-      if enabled
-        @audit_log = adapter ? AuditLog.new(adapter) : AuditLog.new
-      else
-        @audit_log = nil
-      end
+      @audit_log = if enabled
+                     adapter ? AuditLog.new(adapter) : AuditLog.new
+                   end
     end
 
     def versioning(enabled: true)
-      if enabled
-        @versioning = Versioning.new(adapter_registry || default_adapter_registry)
-      else
-        @versioning = nil
-      end
+      @versioning = (Versioning.new(adapter_registry || default_adapter_registry) if enabled)
     end
 
     def circuit_breaker(threshold: nil, timeout: nil)

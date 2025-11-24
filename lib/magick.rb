@@ -39,7 +39,7 @@ module Magick
       # Support both old style and new DSL style
       return unless block_given?
 
-      if block.arity == 0
+      if block.arity.zero?
         # New DSL style
         ConfigDSL.configure(&block)
       else
@@ -68,6 +68,15 @@ module Magick
       feature.enabled?(context)
     end
 
+    def enabled_for?(feature_name, object, **additional_context)
+      feature = features[feature_name.to_s] || self[feature_name]
+      feature.enabled_for?(object, **additional_context)
+    end
+
+    def disabled_for?(feature_name, object, **additional_context)
+      !enabled_for?(feature_name, object, **additional_context)
+    end
+
     # Reload a feature from the adapter (useful when feature is changed externally)
     def reload_feature(feature_name)
       feature = features[feature_name.to_s] || self[feature_name]
@@ -82,7 +91,7 @@ module Magick
       features.key?(feature_name.to_s) || (adapter_registry || default_adapter_registry).exists?(feature_name)
     end
 
-    def bulk_enable(feature_names, context = {})
+    def bulk_enable(feature_names, _context = {})
       feature_names.map do |name|
         feature = features[name.to_s] || self[name]
         feature.set_value(true) if feature.type == :boolean
@@ -90,7 +99,7 @@ module Magick
       end
     end
 
-    def bulk_disable(feature_names, context = {})
+    def bulk_disable(feature_names, _context = {})
       feature_names.map do |name|
         feature = features[name.to_s] || self[name]
         feature.set_value(false) if feature.type == :boolean

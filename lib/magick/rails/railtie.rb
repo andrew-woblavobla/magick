@@ -43,20 +43,22 @@ if defined?(Rails)
             else
               # Fallback to config/initializers/features.rb (already loaded by Rails, but check anyway)
               initializer_file = Rails.root.join('config', 'initializers', 'features.rb')
-              if File.exist?(initializer_file)
+              if File.exist?(initializer_file) && !defined?(Magick::Rails::FeaturesLoaded)
                 # Only load if not already loaded (Rails may have already loaded it)
-                load initializer_file unless defined?(Magick::Rails::FeaturesLoaded)
+                load initializer_file
               end
             end
-            Magick::Rails.const_set(:FeaturesLoaded, true) rescue nil
+            begin
+              Magick::Rails.const_set(:FeaturesLoaded, true)
+            rescue StandardError
+              nil
+            end
           end
         end
 
         # Preload features in request store
         config.to_prepare do
-          if defined?(RequestStore)
-            RequestStore.store[:magick_features] ||= {}
-          end
+          RequestStore.store[:magick_features] ||= {} if defined?(RequestStore)
         end
       end
     end

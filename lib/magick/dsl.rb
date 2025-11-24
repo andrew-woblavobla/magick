@@ -70,6 +70,15 @@ module Magick
     def disable_feature(feature_name, user_id: nil)
       Magick[feature_name].disable(user_id: user_id)
     end
+
+    # Check enablement for an object
+    def enabled_for?(feature_name, object, **additional_context)
+      Magick.enabled_for?(feature_name, object, **additional_context)
+    end
+
+    def disabled_for?(feature_name, object, **additional_context)
+      Magick.disabled_for?(feature_name, object, **additional_context)
+    end
   end
 end
 

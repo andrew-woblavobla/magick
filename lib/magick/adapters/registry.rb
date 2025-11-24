@@ -3,7 +3,7 @@
 module Magick
   module Adapters
     class Registry
-      CACHE_INVALIDATION_CHANNEL = 'magick:cache:invalidate'.freeze
+      CACHE_INVALIDATION_CHANNEL = 'magick:cache:invalidate'
 
       def initialize(memory_adapter, redis_adapter = nil, circuit_breaker: nil, async: false)
         @memory_adapter = memory_adapter
@@ -43,36 +43,36 @@ module Magick
         memory_adapter.set(feature_name, key, value)
 
         # Update Redis if available
-        if redis_adapter
-          update_redis = proc do
-            circuit_breaker.call do
-              redis_adapter.set(feature_name, key, value)
-              # Publish cache invalidation message to notify other processes
-              publish_cache_invalidation(feature_name)
-            end
-          rescue AdapterError => e
-            # Log error but don't fail - memory is updated
-            warn "Failed to update Redis: #{e.message}" if defined?(Rails) && Rails.env.development?
-          end
+        return unless redis_adapter
 
-          if @async && defined?(Thread)
-            Thread.new { update_redis.call }
-          else
-            update_redis.call
+        update_redis = proc do
+          circuit_breaker.call do
+            redis_adapter.set(feature_name, key, value)
+            # Publish cache invalidation message to notify other processes
+            publish_cache_invalidation(feature_name)
           end
+        rescue AdapterError => e
+          # Log error but don't fail - memory is updated
+          warn "Failed to update Redis: #{e.message}" if defined?(Rails) && Rails.env.development?
+        end
+
+        if @async && defined?(Thread)
+          Thread.new { update_redis.call }
+        else
+          update_redis.call
         end
       end
 
       def delete(feature_name)
         memory_adapter.delete(feature_name)
-        if redis_adapter
-          begin
-            redis_adapter.delete(feature_name)
-            # Publish cache invalidation message
-            publish_cache_invalidation(feature_name)
-          rescue AdapterError
-            # Continue even if Redis fails
-          end
+        return unless redis_adapter
+
+        begin
+          redis_adapter.delete(feature_name)
+          # Publish cache invalidation message
+          publish_cache_invalidation(feature_name)
+        rescue AdapterError
+          # Continue even if Redis fails
         end
       end
 
@@ -108,23 +108,21 @@ module Magick
         return unless redis_adapter && defined?(Thread)
 
         @subscriber_thread = Thread.new do
-          begin
-            redis_client = redis_adapter.instance_variable_get(:@redis)
-            return unless redis_client
+          redis_client = redis_adapter.instance_variable_get(:@redis)
+          return unless redis_client
 
-            @subscriber = redis_client.dup
-            @subscriber.subscribe(CACHE_INVALIDATION_CHANNEL) do |on|
-              on.message do |_channel, feature_name|
-                # Invalidate memory cache for this feature
-                memory_adapter.delete(feature_name)
-              end
+          @subscriber = redis_client.dup
+          @subscriber.subscribe(CACHE_INVALIDATION_CHANNEL) do |on|
+            on.message do |_channel, feature_name|
+              # Invalidate memory cache for this feature
+              memory_adapter.delete(feature_name)
             end
-          rescue StandardError => e
-            # If subscription fails, log and retry after a delay
-            warn "Cache invalidation subscriber error: #{e.message}" if defined?(Rails) && Rails.env.development?
-            sleep 5
-            retry
           end
+        rescue StandardError => e
+          # If subscription fails, log and retry after a delay
+          warn "Cache invalidation subscriber error: #{e.message}" if defined?(Rails) && Rails.env.development?
+          sleep 5
+          retry
         end
         @subscriber_thread.abort_on_exception = false
       end

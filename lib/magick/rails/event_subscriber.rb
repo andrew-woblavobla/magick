@@ -20,7 +20,7 @@ module Magick
       end
 
       # Subscribe to a specific event
-      def subscribe_to(event_name, &block)
+      def subscribe_to(event_name)
         return unless Events.rails81?
 
         full_event_name = Events::EVENTS[event_name] || event_name.to_s
@@ -44,7 +44,7 @@ module Magick
     # Default log subscriber for Magick events
     class LogSubscriber
       def emit(event)
-        payload = event[:payload].map { |key, value| "#{key}=#{value}" }.join(" ")
+        payload = event[:payload].map { |key, value| "#{key}=#{value}" }.join(' ')
         source_location = event[:source_location]
         log = "[#{event[:name]}] #{payload}"
         log += " at #{source_location[:filepath]}:#{source_location[:lineno]}" if source_location

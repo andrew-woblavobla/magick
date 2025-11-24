@@ -69,28 +69,20 @@ module Magick
       return false if status == :deprecated && !context[:allow_deprecated]
 
       # Check feature dependencies
-      unless dependencies.empty?
-        return false unless dependencies.all? { |dep_name| Magick.enabled?(dep_name, context) }
-      end
+      return false if !dependencies.empty? && !dependencies.all? { |dep_name| Magick.enabled?(dep_name, context) }
 
       # Check date/time range targeting
-      if targeting[:date_range] && !date_range_active?(targeting[:date_range])
-        return false
-      end
+      return false if targeting[:date_range] && !date_range_active?(targeting[:date_range])
 
       # Check IP address targeting
-      if targeting[:ip_address] && context[:ip_address]
-        return false unless ip_address_matches?(context[:ip_address])
-      end
+      return false if targeting[:ip_address] && context[:ip_address] && !ip_address_matches?(context[:ip_address])
 
       # Check custom attributes
-      if targeting[:custom_attributes]
-        return false unless custom_attributes_match?(context, targeting[:custom_attributes])
-      end
+      return false if targeting[:custom_attributes] && !custom_attributes_match?(context, targeting[:custom_attributes])
 
       # Check complex conditions
-      if targeting[:complex_conditions]
-        return false unless complex_conditions_match?(context, targeting[:complex_conditions])
+      if targeting[:complex_conditions] && !complex_conditions_match?(context, targeting[:complex_conditions])
+        return false
       end
 
       value = get_value(context)
@@ -100,7 +92,7 @@ module Magick
       when :string
         !value.nil? && value != ''
       when :number
-        value.to_f > 0
+        value.to_f.positive?
       else
         false
       end
@@ -108,6 +100,18 @@ module Magick
 
     def disabled?(context = {})
       !enabled?(context)
+    end
+
+    def enabled_for?(object, **additional_context)
+      # Extract context from object
+      context = extract_context_from_object(object)
+      # Merge with any additional context provided
+      context.merge!(additional_context)
+      enabled?(context)
+    end
+
+    def disabled_for?(object, **additional_context)
+      !enabled_for?(object, **additional_context)
     end
 
     def value(context = {})
@@ -125,26 +129,32 @@ module Magick
 
     def enable_for_user(user_id)
       enable_targeting(:user, user_id)
+      true
     end
 
     def disable_for_user(user_id)
       disable_targeting(:user, user_id)
+      true
     end
 
     def enable_for_group(group_name)
       enable_targeting(:group, group_name)
+      true
     end
 
     def disable_for_group(group_name)
       disable_targeting(:group, group_name)
+      true
     end
 
     def enable_for_role(role_name)
       enable_targeting(:role, role_name)
+      true
     end
 
     def disable_for_role(role_name)
       disable_targeting(:role, role_name)
+      true
     end
 
     def enable_percentage_of_users(percentage)
@@ -152,18 +162,19 @@ module Magick
       save_targeting
 
       # Update registered feature instance if it exists
-      if Magick.features.key?(name)
-        Magick.features[name].instance_variable_set(:@targeting, @targeting.dup)
-      end
+      Magick.features[name].instance_variable_set(:@targeting, @targeting.dup) if Magick.features.key?(name)
 
       # Rails 8+ event
       if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
         Magick::Rails::Events.targeting_added(name, targeting_type: :percentage_users, targeting_value: percentage)
       end
+
+      true
     end
 
     def disable_percentage_of_users
       disable_targeting(:percentage_users)
+      true
     end
 
     def enable_percentage_of_requests(percentage)
@@ -171,40 +182,46 @@ module Magick
       save_targeting
 
       # Update registered feature instance if it exists
-      if Magick.features.key?(name)
-        Magick.features[name].instance_variable_set(:@targeting, @targeting.dup)
-      end
+      Magick.features[name].instance_variable_set(:@targeting, @targeting.dup) if Magick.features.key?(name)
 
       # Rails 8+ event
       if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
         Magick::Rails::Events.targeting_added(name, targeting_type: :percentage_requests, targeting_value: percentage)
       end
+
+      true
     end
 
     def disable_percentage_of_requests
       disable_targeting(:percentage_requests)
+      true
     end
 
     def enable_for_date_range(start_date, end_date)
       enable_targeting(:date_range, { start: start_date, end: end_date })
+      true
     end
 
     def disable_date_range
       disable_targeting(:date_range)
+      true
     end
 
     def enable_for_ip_addresses(ip_addresses)
       enable_targeting(:ip_address, Array(ip_addresses))
+      true
     end
 
     def disable_ip_addresses
       disable_targeting(:ip_address)
+      true
     end
 
     def enable_for_custom_attribute(attribute_name, values, operator: :equals)
       custom_attrs = targeting[:custom_attributes] || {}
       custom_attrs[attribute_name.to_sym] = { values: Array(values), operator: operator }
       enable_targeting(:custom_attributes, custom_attrs)
+      true
     end
 
     def disable_custom_attribute(attribute_name)
@@ -215,6 +232,7 @@ module Magick
       else
         enable_targeting(:custom_attributes, custom_attrs)
       end
+      true
     end
 
     def set_variants(variants)
@@ -227,6 +245,8 @@ module Magick
       if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
         Magick::Rails::Events.variant_set(name, variants: variants_array)
       end
+
+      true
     end
 
     def add_dependency(dependency_name)
@@ -237,6 +257,8 @@ module Magick
       if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
         Magick::Rails::Events.dependency_added(name, dependency_name)
       end
+
+      true
     end
 
     def remove_dependency(dependency_name)
@@ -246,6 +268,8 @@ module Magick
       if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
         Magick::Rails::Events.dependency_removed(name, dependency_name)
       end
+
+      true
     end
 
     def dependencies
@@ -257,26 +281,26 @@ module Magick
 
       variants = targeting[:variants]
       selected_variant = if variants.length == 1
-        variants.first[:name]
-      else
-        # Weighted random selection
-        total_weight = variants.sum { |v| v[:weight] || 0 }
-        if total_weight == 0
-          variants.first[:name]
-        else
-          random = rand(total_weight)
-          current = 0
-          selected = nil
-          variants.each do |variant|
-            current += (variant[:weight] || 0)
-            if random < current
-              selected = variant[:name]
-              break
-            end
-          end
-          selected || variants.first[:name]
-        end
-      end
+                           variants.first[:name]
+                         else
+                           # Weighted random selection
+                           total_weight = variants.sum { |v| v[:weight] || 0 }
+                           if total_weight.zero?
+                             variants.first[:name]
+                           else
+                             random = rand(total_weight)
+                             current = 0
+                             selected = nil
+                             variants.each do |variant|
+                               current += variant[:weight] || 0
+                               if random < current
+                                 selected = variant[:name]
+                                 break
+                               end
+                             end
+                             selected || variants.first[:name]
+                           end
+                         end
 
       # Rails 8+ event
       if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
@@ -297,27 +321,25 @@ module Magick
       @stored_value = value
 
       # Update registered feature instance if it exists
-      if Magick.features.key?(name)
-        Magick.features[name].instance_variable_set(:@stored_value, value)
-      end
+      Magick.features[name].instance_variable_set(:@stored_value, value) if Magick.features.key?(name)
 
       changes = { value: { from: old_value, to: value } }
 
       # Audit log
-      if Magick.audit_log
-        Magick.audit_log.log(
-          name,
-          'set_value',
-          user_id: user_id,
-          changes: changes
-        )
-      end
+      Magick.audit_log&.log(
+        name,
+        'set_value',
+        user_id: user_id,
+        changes: changes
+      )
 
       # Rails 8+ events
       if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
         Magick::Rails::Events.feature_changed(name, changes: changes, user_id: user_id)
         Magick::Rails::Events.audit_logged(name, action: 'set_value', user_id: user_id, changes: changes)
       end
+
+      true
     end
 
     def enable(user_id: nil)
@@ -329,9 +351,9 @@ module Magick
       when :boolean
         set_value(true, user_id: user_id)
       when :string
-        raise InvalidFeatureValueError, "Cannot enable string feature. Use set_value instead."
+        raise InvalidFeatureValueError, 'Cannot enable string feature. Use set_value instead.'
       when :number
-        raise InvalidFeatureValueError, "Cannot enable number feature. Use set_value instead."
+        raise InvalidFeatureValueError, 'Cannot enable number feature. Use set_value instead.'
       else
         raise InvalidFeatureValueError, "Cannot enable feature of type #{type}"
       end
@@ -340,6 +362,8 @@ module Magick
       if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
         Magick::Rails::Events.feature_enabled_globally(name, user_id: user_id)
       end
+
+      true
     end
 
     def disable(user_id: nil)
@@ -362,6 +386,8 @@ module Magick
       if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
         Magick::Rails::Events.feature_disabled_globally(name, user_id: user_id)
       end
+
+      true
     end
 
     def set_status(new_status)
@@ -369,6 +395,7 @@ module Magick
 
       @status = new_status.to_sym
       adapter_registry.set(name, 'status', status)
+      true
     end
 
     def delete
@@ -377,6 +404,7 @@ module Magick
       @targeting = {}
       # Also remove from Magick.features if registered
       Magick.features.delete(name.to_s)
+      true
     end
 
     def to_h
@@ -438,7 +466,7 @@ module Magick
 
       case type
       when :boolean
-        value == true || value == 'true' || value == 1
+        [true, 'true', 1].include?(value)
       when :string
         value.to_s
       when :number
@@ -588,6 +616,45 @@ module Magick
       (hash_value % 100) < percentage
     end
 
+    def extract_context_from_object(object)
+      context = {}
+
+      # Handle hash/struct-like objects
+      if object.is_a?(Hash)
+        context[:user_id] = object[:user_id] || object['user_id'] || object[:id] || object['id']
+        context[:group] = object[:group] || object['group']
+        context[:role] = object[:role] || object['role']
+        context[:ip_address] = object[:ip_address] || object['ip_address']
+        # Include all other attributes for custom attribute matching
+        object.each do |key, value|
+          next if %i[user_id id group role ip_address].include?(key.to_sym)
+          next if %w[user_id id group role ip_address].include?(key.to_s)
+
+          context[key.to_sym] = value
+        end
+      # Handle ActiveRecord-like objects (respond to methods)
+      elsif object.respond_to?(:id) || object.respond_to?(:user_id)
+        context[:user_id] = object.respond_to?(:user_id) ? object.user_id : object.id
+        context[:group] = object.group if object.respond_to?(:group)
+        context[:role] = object.role if object.respond_to?(:role)
+        context[:ip_address] = object.ip_address if object.respond_to?(:ip_address)
+
+        # For ActiveRecord objects, include all attributes
+        if object.respond_to?(:attributes)
+          object.attributes.each do |key, value|
+            next if %w[id user_id group role ip_address].include?(key.to_s)
+
+            context[key.to_sym] = value
+          end
+        end
+      # Handle simple values (like user_id directly)
+      elsif object.respond_to?(:to_i) && object.to_i.to_s == object.to_s
+        context[:user_id] = object.to_i
+      end
+
+      context
+    end
+
     def enable_targeting(type, value)
       @targeting[type] ||= []
       @targeting[type] << value.to_s unless @targeting[type].include?(value.to_s)
@@ -597,6 +664,8 @@ module Magick
       if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
         Magick::Rails::Events.targeting_added(name, targeting_type: type, targeting_value: value)
       end
+
+      true
     end
 
     def disable_targeting(type, value = nil)
@@ -611,14 +680,16 @@ module Magick
       if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
         Magick::Rails::Events.targeting_removed(name, targeting_type: type, targeting_value: value)
       end
+
+      true
     end
 
     def save_targeting
       adapter_registry.set(name, 'targeting', targeting)
       # Update the feature in Magick.features if it's registered
-      if Magick.features.key?(name)
-        Magick.features[name].instance_variable_set(:@targeting, targeting.dup)
-      end
+      return unless Magick.features.key?(name)
+
+      Magick.features[name].instance_variable_set(:@targeting, targeting.dup)
     end
 
     def default_for_type
@@ -643,22 +714,30 @@ module Magick
     def validate_default_value!
       case type
       when :boolean
-        raise InvalidFeatureValueError, "Default value must be boolean for type :boolean" unless [true, false].include?(default_value)
+        unless [true, false].include?(default_value)
+          raise InvalidFeatureValueError, 'Default value must be boolean for type :boolean'
+        end
       when :string
-        raise InvalidFeatureValueError, "Default value must be a string for type :string" unless default_value.is_a?(String)
+        unless default_value.is_a?(String)
+          raise InvalidFeatureValueError,
+                'Default value must be a string for type :string'
+        end
       when :number
-        raise InvalidFeatureValueError, "Default value must be numeric for type :number" unless default_value.is_a?(Numeric)
+        unless default_value.is_a?(Numeric)
+          raise InvalidFeatureValueError,
+                'Default value must be numeric for type :number'
+        end
       end
     end
 
     def validate_value!(value)
       case type
       when :boolean
-        raise InvalidFeatureValueError, "Value must be boolean for type :boolean" unless [true, false].include?(value)
+        raise InvalidFeatureValueError, 'Value must be boolean for type :boolean' unless [true, false].include?(value)
       when :string
-        raise InvalidFeatureValueError, "Value must be a string for type :string" unless value.is_a?(String)
+        raise InvalidFeatureValueError, 'Value must be a string for type :string' unless value.is_a?(String)
       when :number
-        raise InvalidFeatureValueError, "Value must be numeric for type :number" unless value.is_a?(Numeric)
+        raise InvalidFeatureValueError, 'Value must be numeric for type :number' unless value.is_a?(Numeric)
       end
     end
   end

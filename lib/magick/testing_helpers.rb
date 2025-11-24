@@ -7,7 +7,7 @@ module Magick
     end
 
     module ClassMethods
-      def with_feature_enabled(feature_name, &block)
+      def with_feature_enabled(feature_name)
         feature = Magick.features[feature_name.to_s] || Magick[feature_name]
         original_value = feature.value
         feature.set_value(true)
@@ -16,7 +16,7 @@ module Magick
         feature.set_value(original_value)
       end
 
-      def with_feature_disabled(feature_name, &block)
+      def with_feature_disabled(feature_name)
         feature = Magick.features[feature_name.to_s] || Magick[feature_name]
         original_value = feature.value
         feature.set_value(false)
@@ -25,7 +25,7 @@ module Magick
         feature.set_value(original_value)
       end
 
-      def with_feature_value(feature_name, value, &block)
+      def with_feature_value(feature_name, value)
         feature = Magick.features[feature_name.to_s] || Magick[feature_name]
         original_value = feature.value
         feature.set_value(value)

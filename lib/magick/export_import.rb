@@ -5,7 +5,7 @@ require 'json'
 module Magick
   class ExportImport
     def self.export(features_hash)
-      result = features_hash.map do |name, feature|
+      result = features_hash.map do |_name, feature|
         feature.to_h
       end
 
@@ -45,7 +45,9 @@ module Magick
           description: feature_data['description'] || feature_data[:description]
         )
 
-        feature.set_value(feature_data['value'] || feature_data[:value]) if feature_data['value'] || feature_data[:value]
+        if feature_data['value'] || feature_data[:value]
+          feature.set_value(feature_data['value'] || feature_data[:value])
+        end
 
         # Import targeting
         if feature_data['targeting'] || feature_data[:targeting]

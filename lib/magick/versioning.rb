@@ -61,17 +61,15 @@ module Magick
       feature.set_status(feature_data[:status]) if feature_data[:status]
 
       # Restore targeting
-      if feature_data[:targeting]
-        feature_data[:targeting].each do |type, values|
-          Array(values).each do |value|
-            case type.to_sym
-            when :user
-              feature.enable_for_user(value)
-            when :group
-              feature.enable_for_group(value)
-            when :role
-              feature.enable_for_role(value)
-            end
+      feature_data[:targeting]&.each do |type, values|
+        Array(values).each do |value|
+          case type.to_sym
+          when :user
+            feature.enable_for_user(value)
+          when :group
+            feature.enable_for_group(value)
+          when :role
+            feature.enable_for_role(value)
           end
         end
       end
