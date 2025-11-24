@@ -33,15 +33,54 @@ module Magick
       # Update targeting empty cache after loading
       @_targeting_empty = @targeting.empty?
       # Cache performance metrics availability (check once, not on every call)
-      @_perf_metrics_enabled = Magick.performance_metrics != nil
+      # Only enable if performance_metrics exists AND is actually being used
+      @_perf_metrics_enabled = !Magick.performance_metrics.nil?
       # Save description and display_name to adapter if they were provided and not already in adapter
       save_metadata_if_new
     end
 
     def enabled?(context = {})
-      # Fastest path: check enabled status directly (no overhead)
-      check_enabled(context)
+      # Check performance metrics dynamically (in case enabled after feature creation)
+      # But cache the check result for performance
+      perf_metrics = Magick.performance_metrics
+      perf_metrics_enabled = !perf_metrics.nil?
+
+      # Update cached flag if it changed
+      @_perf_metrics_enabled = perf_metrics_enabled if @_perf_metrics_enabled != perf_metrics_enabled
+
+      # Fast path: if performance metrics disabled, skip all overhead
+      return check_enabled(context) unless perf_metrics_enabled
+
+      # Performance metrics enabled: measure and record
+      start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      result = check_enabled(context)
+      duration = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time) * 1000 # milliseconds
+
+      # Record metrics (only if enabled)
+      perf_metrics.record(name, 'enabled?', duration, success: true)
+
+      # Rails 8+ events (only in development or when explicitly enabled)
+      if @_rails_events_enabled
+        if result
+          Magick::Rails::Events.feature_enabled(name, context: context)
+        else
+          Magick::Rails::Events.feature_disabled(name, context: context)
+        end
+      end
+
+      # Warn if deprecated (only if enabled)
+      if status == :deprecated && result && !context[:allow_deprecated] && Magick.warn_on_deprecated
+        warn "DEPRECATED: Feature '#{name}' is deprecated and will be removed."
+        Magick::Rails::Events.deprecated_warning(name) if @_rails_events_enabled
+      end
+
+      result
     rescue StandardError => e
+      # Record error metrics if enabled
+      if perf_metrics_enabled && perf_metrics
+        duration = defined?(start_time) && start_time ? (Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time) * 1000 : 0.0
+        perf_metrics.record(name, 'enabled?', duration, success: false)
+      end
       # Return false on any error (fail-safe)
       warn "Magick: Error checking feature '#{name}': #{e.message}" if defined?(Rails) && Rails.env.development?
       false
@@ -452,6 +491,10 @@ module Magick
     # Reload feature state from adapter (useful when feature is changed externally)
     def reload
       load_from_adapter
+      # Update targeting empty cache
+      @_targeting_empty = @targeting.empty?
+      # Update performance metrics flag (in case it was enabled after feature creation)
+      @_perf_metrics_enabled = !Magick.performance_metrics.nil?
       # Update registered feature instance if it exists
       if Magick.features.key?(name)
         registered = Magick.features[name]
@@ -461,6 +504,8 @@ module Magick
         registered.instance_variable_set(:@description, @description)
         registered.instance_variable_set(:@display_name, @display_name)
         registered.instance_variable_set(:@targeting, @targeting.dup)
+        registered.instance_variable_set(:@_targeting_empty, @_targeting_empty)
+        registered.instance_variable_set(:@_perf_metrics_enabled, @_perf_metrics_enabled)
       end
       true
     end

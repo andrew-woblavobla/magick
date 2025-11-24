@@ -38,6 +38,12 @@ module Magick
       if value && adapter_registry.is_a?(Adapters::Registry) && adapter_registry.redis_available?
         value.enable_redis_tracking(enable: true)
       end
+      # Update all existing features to enable performance metrics tracking
+      if value
+        features.each_value do |feature|
+          feature.instance_variable_set(:@_perf_metrics_enabled, true)
+        end
+      end
       value
     end
 
