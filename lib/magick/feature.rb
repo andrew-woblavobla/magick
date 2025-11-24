@@ -20,6 +20,7 @@ module Magick
       @display_name = options[:name] || options[:display_name]
       @targeting = {}
       @dependencies = options[:dependencies] ? Array(options[:dependencies]) : []
+      @stored_value_initialized = false # Track if @stored_value has been explicitly set
 
       validate_type!
       validate_default_value!
@@ -64,7 +65,9 @@ module Magick
         duration = (Time.now - start_time) * 1000
         Magick.performance_metrics.record(name, 'enabled?', duration, success: false)
       end
-      raise e
+      # Return false on any error (fail-safe)
+      warn "Magick: Error checking feature '#{name}': #{e.message}" if defined?(Rails) && Rails.env.development?
+      false
     end
 
     def check_enabled(context = {})
@@ -99,6 +102,10 @@ module Magick
       else
         false
       end
+    rescue StandardError => e
+      # Return false on any error (fail-safe)
+      warn "Magick: Error in check_enabled for '#{name}': #{e.message}" if defined?(Rails) && Rails.env.development?
+      false
     end
 
     def disabled?(context = {})
@@ -126,11 +133,26 @@ module Magick
       targeting_result = check_targeting(context)
       return targeting_result unless targeting_result.nil?
 
-      # Use instance variable if set, otherwise load from adapter
-      # This ensures we use the most recent value set via set_value/disable/enable
-      value = @stored_value
-      value = load_value_from_adapter if value.nil?
-      value || default_value
+      # Use instance variable if it has been set (check using defined? to handle nil vs uninitialized)
+      # We use a special check: if @stored_value was explicitly set (even to false), use it
+      # We track this by checking if @stored_value_initialized flag is set
+      return @stored_value if defined?(@stored_value_initialized) && @stored_value_initialized
+
+      # Load from adapter if instance variable hasn't been initialized
+      loaded_value = load_value_from_adapter
+      if loaded_value.nil?
+        # Value not found in adapter, use default
+        default_value
+      else
+        # Value found in adapter, use it and mark as initialized
+        @stored_value = loaded_value
+        @stored_value_initialized = true
+        loaded_value
+      end
+    rescue StandardError => e
+      # Return default value on error (fail-safe)
+      warn "Magick: Error in get_value for '#{name}': #{e.message}" if defined?(Rails) && Rails.env.development?
+      default_value
     end
 
     def enable_for_user(user_id)
@@ -326,11 +348,13 @@ module Magick
       adapter_registry.set(name, 'description', description) if description
       adapter_registry.set(name, 'display_name', display_name) if display_name
       @stored_value = value
+      @stored_value_initialized = true # Mark as initialized
 
       # Update registered feature instance if it exists
       if Magick.features.key?(name)
         registered = Magick.features[name]
         registered.instance_variable_set(:@stored_value, value)
+        registered.instance_variable_set(:@stored_value_initialized, true)
         registered.instance_variable_set(:@targeting, @targeting.dup) if @targeting
       end
 
@@ -434,6 +458,7 @@ module Magick
       if Magick.features.key?(name)
         registered = Magick.features[name]
         registered.instance_variable_set(:@stored_value, @stored_value)
+        registered.instance_variable_set(:@stored_value_initialized, @stored_value_initialized)
         registered.instance_variable_set(:@status, @status)
         registered.instance_variable_set(:@description, @description)
         registered.instance_variable_set(:@display_name, @display_name)
@@ -466,19 +491,31 @@ module Magick
     end
 
     def load_from_adapter
-      # Clear cached value to force reload from adapter (which checks version)
-      @stored_value = nil
-      @stored_value = load_value_from_adapter
+      # Load value from adapter
+      loaded_value = load_value_from_adapter
+      # Set @stored_value if we got a value from adapter (can be false, true, '', 0, etc.)
+      # Only set if loaded_value is not nil (nil means not found in adapter)
+      unless loaded_value.nil?
+        @stored_value = loaded_value
+        @stored_value_initialized = true
+      end
+
       status_value = adapter_registry.get(name, 'status')
       @status = status_value ? status_value.to_sym : status
 
-      # Load description from adapter (override initial value if present in adapter)
-      description_value = adapter_registry.get(name, 'description')
-      @description = description_value if description_value
+      # Load description from adapter only if not provided in DSL
+      # DSL (features.rb) is the source of truth, so don't override DSL values
+      unless @description
+        description_value = adapter_registry.get(name, 'description')
+        @description = description_value if description_value
+      end
 
-      # Load display_name from adapter (override initial value if present in adapter)
-      display_name_value = adapter_registry.get(name, 'display_name')
-      @display_name = display_name_value if display_name_value
+      # Load display_name from adapter only if not provided in DSL
+      # DSL (features.rb) is the source of truth, so don't override DSL values
+      unless @display_name
+        display_name_value = adapter_registry.get(name, 'display_name')
+        @display_name = display_name_value if display_name_value
+      end
 
       targeting_value = adapter_registry.get(name, 'targeting')
       if targeting_value.is_a?(Hash)
@@ -493,12 +530,11 @@ module Magick
     end
 
     def save_metadata_if_new
-      # Save description and display_name to adapter if they were provided in options
-      # but don't exist in adapter yet (to avoid overwriting existing values)
-      if @description && !adapter_registry.get(name, 'description')
-        adapter_registry.set(name, 'description', @description)
-      end
-      return unless @display_name && !adapter_registry.get(name, 'display_name')
+      # Always save description and display_name from DSL to adapter
+      # The features.rb file is the source of truth for metadata
+      # This ensures metadata is always up-to-date even if feature already exists
+      adapter_registry.set(name, 'description', @description) if @description
+      return unless @display_name
 
       adapter_registry.set(name, 'display_name', @display_name)
     end
