@@ -29,11 +29,44 @@ if defined?(Rails)
                   memory_adapter = Adapters::Memory.new
                   redis_adapter = Adapters::Redis.new(redis_client)
                   magick.adapter_registry = Adapters::Registry.new(memory_adapter, redis_adapter)
-                  # Re-apply Redis tracking if performance metrics exists
-                  Magick.reapply_redis_tracking! if Magick.performance_metrics
+                  # Enable Redis tracking if performance metrics exists and Redis is available
+                  if Magick.performance_metrics && redis_adapter
+                    Magick.performance_metrics.enable_redis_tracking(enable: true)
+                  end
                 rescue StandardError => e
                   Rails.logger&.warn "Magick: Failed to initialize Redis adapter: #{e.message}. Using memory-only adapter."
+                  # Still set up memory adapter even if Redis fails
+                  memory_adapter = Adapters::Memory.new
+                  magick.adapter_registry = Adapters::Registry.new(memory_adapter, nil)
                 end
+              else
+                # No Redis gem, use memory-only adapter
+                memory_adapter = Adapters::Memory.new
+                magick.adapter_registry = Adapters::Registry.new(memory_adapter, nil)
+              end
+            end
+          end
+
+          # Ensure adapter_registry is always set (fallback to default if not configured)
+          unless Magick.adapter_registry
+            Magick.adapter_registry = Magick.default_adapter_registry
+          end
+
+          # Ensure adapter_registry is set and Redis tracking is enabled after all initializers have run
+          # This ensures user's config/initializers/magick.rb has been loaded
+          config.after_initialize do
+            # Ensure adapter_registry is set (fallback to default if not configured)
+            unless Magick.adapter_registry
+              Magick.adapter_registry = Magick.default_adapter_registry
+            end
+
+            # Force enable Redis tracking if Redis adapter is available
+            # This is a final safety net to ensure stats are collected
+            if Magick.performance_metrics && Magick.adapter_registry.is_a?(Adapters::Registry) && Magick.adapter_registry.redis_available?
+              Magick.performance_metrics.enable_redis_tracking(enable: true)
+              # Double-check it was enabled (for debugging)
+              unless Magick.performance_metrics.redis_enabled
+                Rails.logger&.warn 'Magick: Failed to enable Redis tracking despite Redis adapter being available'
               end
             end
           end
@@ -64,6 +97,12 @@ if defined?(Rails)
         # Preload features in request store
         config.to_prepare do
           RequestStore.store[:magick_features] ||= {} if defined?(RequestStore)
+
+          # Final check: ensure Redis tracking is enabled (runs on every request in development)
+          # This is the absolute last chance to enable it
+          if Magick.performance_metrics && Magick.adapter_registry.is_a?(Adapters::Registry) && Magick.adapter_registry.redis_available? && !Magick.performance_metrics.redis_enabled
+            Magick.performance_metrics.enable_redis_tracking(enable: true)
+          end
         end
       end
     end

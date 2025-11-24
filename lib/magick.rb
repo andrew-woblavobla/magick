@@ -28,24 +28,63 @@ require_relative 'magick/dsl'
 
 module Magick
   class << self
-    attr_accessor :adapter_registry, :default_adapter, :performance_metrics, :audit_log, :versioning,
+    attr_accessor :adapter_registry, :default_adapter, :audit_log, :versioning,
                   :warn_on_deprecated
+
+    # Override performance_metrics setter to auto-enable Redis tracking
+    def performance_metrics=(value)
+      @performance_metrics = value
+      # Auto-enable Redis tracking if Redis adapter is available
+      if value && adapter_registry.is_a?(Adapters::Registry) && adapter_registry.redis_available?
+        value.enable_redis_tracking(enable: true)
+      end
+      value
+    end
+
+    # Override adapter_registry setter to auto-enable Redis tracking on existing performance_metrics
+    def adapter_registry=(value)
+      @adapter_registry = value
+      # Auto-enable Redis tracking if performance_metrics exists and Redis adapter is available
+      if performance_metrics && value.is_a?(Adapters::Registry) && value.redis_available?
+        performance_metrics.enable_redis_tracking(enable: true)
+      end
+      value
+    end
+
+    # Getter for performance_metrics
+    def performance_metrics
+      @performance_metrics
+    end
 
     def configure(&block)
       @performance_metrics ||= PerformanceMetrics.new
       @audit_log ||= AuditLog.new
       @warn_on_deprecated ||= false
+      # Ensure adapter_registry is set (fallback to default if not configured)
+      @adapter_registry ||= default_adapter_registry
 
       # Support both old style and new DSL style
       return unless block_given?
 
       if block.arity.zero?
-        # New DSL style
+        # New DSL style - calls apply! automatically
         ConfigDSL.configure(&block)
       else
-        # Old style
+        # Old style - need to manually reapply Redis tracking after configuration
         yield self
+        # Ensure adapter_registry is still set after configuration
+        @adapter_registry ||= default_adapter_registry
+        # Enable Redis tracking if adapter is available and performance_metrics exists
+        # Only enable if not already enabled (to avoid overriding explicit false setting)
+        if @performance_metrics && @adapter_registry.is_a?(Adapters::Registry) && @adapter_registry.redis_available?
+          unless @performance_metrics.instance_variable_get(:@redis_enabled)
+            @performance_metrics.enable_redis_tracking(enable: true)
+          end
+        end
       end
+
+      # Final check: ensure adapter_registry is set
+      @adapter_registry ||= default_adapter_registry
     end
 
     def [](feature_name)

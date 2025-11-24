@@ -41,21 +41,50 @@ module Magick
     def redis(url: nil, namespace: nil, **options)
       @redis_url = url if url
       @redis_namespace = namespace if namespace
-      configure_redis_adapter(url: url, namespace: namespace, **options)
+      redis_adapter = configure_redis_adapter(url: url, namespace: namespace, **options)
+
+      # Automatically create Registry adapter if it doesn't exist
+      # This allows users to just call `redis url: ...` without needing to call `adapter :registry`
+      if @adapter_registry
+        # If registry already exists, update it with the new Redis adapter
+        # This allows reconfiguring Redis without recreating the registry
+        if redis_adapter && @adapter_registry.is_a?(Adapters::Registry)
+          # Update the Redis adapter in the existing registry
+          @adapter_registry.instance_variable_set(:@redis_adapter, redis_adapter)
+          # Restart cache invalidation subscriber with new Redis adapter
+          @adapter_registry.send(:start_cache_invalidation_subscriber) if redis_adapter
+        end
+      else
+        memory_adapter = configure_memory_adapter
+        cb = Magick::CircuitBreaker.new(
+          failure_threshold: @circuit_breaker_threshold,
+          timeout: @circuit_breaker_timeout
+        )
+        @adapter_registry = Adapters::Registry.new(
+          memory_adapter,
+          redis_adapter,
+          circuit_breaker: cb,
+          async: @async_updates
+        )
+      end
+
+      redis_adapter
     end
 
     def performance_metrics(enabled: true, redis_tracking: nil, batch_size: 100, flush_interval: 60, **_options)
       return unless enabled
 
-      @performance_metrics = PerformanceMetrics.new(batch_size: batch_size, flush_interval: flush_interval)
-      # Store redis_tracking preference for later application
+      # Store redis_tracking preference before creating instance
       @performance_metrics_redis_tracking = redis_tracking
-      # Enable Redis tracking if explicitly set to true, otherwise defer to apply! method
-      if redis_tracking == true
-        @performance_metrics.enable_redis_tracking(enable: true)
-      elsif redis_tracking == false
-        @performance_metrics.enable_redis_tracking(enable: false)
-      end
+      # Create instance with redis_enabled set if explicitly provided
+      initial_redis_enabled = redis_tracking == true
+      @performance_metrics = PerformanceMetrics.new(
+        batch_size: batch_size,
+        flush_interval: flush_interval,
+        redis_enabled: initial_redis_enabled
+      )
+      # If explicitly set to false, disable it
+      @performance_metrics.enable_redis_tracking(enable: false) if redis_tracking == false
       # If nil, will be auto-determined in apply! method
       @performance_metrics
     end
@@ -100,10 +129,19 @@ module Magick
         Magick.performance_metrics = performance_metrics
         # Re-apply redis_tracking setting after assignment (in case object was replaced)
         if defined?(@performance_metrics_redis_tracking) && !@performance_metrics_redis_tracking.nil?
+          # Explicitly set value takes precedence
           Magick.performance_metrics.enable_redis_tracking(enable: @performance_metrics_redis_tracking)
         # Otherwise, auto-enable if Redis adapter is configured
         # Check Magick.adapter_registry (after it's been set) instead of local instance variable
         elsif Magick.adapter_registry.is_a?(Adapters::Registry) && Magick.adapter_registry.redis_available?
+          # Always enable if Redis adapter is available (unless explicitly disabled above)
+          Magick.performance_metrics.enable_redis_tracking(enable: true)
+        end
+      elsif Magick.performance_metrics
+        # If no new performance_metrics was configured, but one exists, still try to enable Redis tracking
+        # if Redis adapter is available and redis_tracking wasn't explicitly disabled
+        # Only auto-enable if not explicitly disabled
+        if Magick.adapter_registry.is_a?(Adapters::Registry) && Magick.adapter_registry.redis_available? && !(defined?(@performance_metrics_redis_tracking) && @performance_metrics_redis_tracking == false)
           Magick.performance_metrics.enable_redis_tracking(enable: true)
         end
       end
@@ -150,7 +188,7 @@ module Magick
       memory_adapter = memory || configure_memory_adapter
       redis_adapter = redis || configure_redis_adapter
 
-      cb = circuit_breaker || CircuitBreaker.new(
+      cb = circuit_breaker || Magick::CircuitBreaker.new(
         failure_threshold: @circuit_breaker_threshold,
         timeout: @circuit_breaker_timeout
       )
