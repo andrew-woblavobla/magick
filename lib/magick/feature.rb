@@ -8,7 +8,7 @@ module Magick
     VALID_TYPES = %i[boolean string number].freeze
     VALID_STATUSES = %i[active inactive deprecated].freeze
 
-    attr_reader :name, :type, :status, :default_value, :description, :adapter_registry
+    attr_reader :name, :type, :status, :default_value, :description, :display_name, :adapter_registry
 
     def initialize(name, adapter_registry, **options)
       @name = name.to_s
@@ -17,12 +17,15 @@ module Magick
       @status = (options[:status] || :active).to_sym
       @default_value = options.fetch(:default_value, default_for_type)
       @description = options[:description]
+      @display_name = options[:name] || options[:display_name]
       @targeting = {}
       @dependencies = options[:dependencies] ? Array(options[:dependencies]) : []
 
       validate_type!
       validate_default_value!
       load_from_adapter
+      # Save description and display_name to adapter if they were provided and not already in adapter
+      save_metadata_if_new
     end
 
     def enabled?(context = {})
@@ -318,10 +321,15 @@ module Magick
       adapter_registry.set(name, 'status', status)
       adapter_registry.set(name, 'default_value', default_value)
       adapter_registry.set(name, 'description', description) if description
+      adapter_registry.set(name, 'display_name', display_name) if display_name
       @stored_value = value
 
       # Update registered feature instance if it exists
-      Magick.features[name].instance_variable_set(:@stored_value, value) if Magick.features.key?(name)
+      if Magick.features.key?(name)
+        registered = Magick.features[name]
+        registered.instance_variable_set(:@stored_value, value)
+        registered.instance_variable_set(:@targeting, @targeting.dup) if @targeting
+      end
 
       changes = { value: { from: old_value, to: value } }
 
@@ -382,6 +390,15 @@ module Magick
         raise InvalidFeatureValueError, "Cannot disable feature of type #{type}"
       end
 
+      # Ensure registered feature instance also has targeting cleared
+      if Magick.features.key?(name)
+        registered = Magick.features[name]
+        registered.instance_variable_set(:@targeting, {})
+      end
+
+      # Cascade disable: disable all features that depend on this one
+      disable_dependent_features(user_id: user_id)
+
       # Rails 8+ event
       if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
         Magick::Rails::Events.feature_disabled_globally(name, user_id: user_id)
@@ -407,9 +424,25 @@ module Magick
       true
     end
 
+    # Reload feature state from adapter (useful when feature is changed externally)
+    def reload
+      load_from_adapter
+      # Update registered feature instance if it exists
+      if Magick.features.key?(name)
+        registered = Magick.features[name]
+        registered.instance_variable_set(:@stored_value, @stored_value)
+        registered.instance_variable_set(:@status, @status)
+        registered.instance_variable_set(:@description, @description)
+        registered.instance_variable_set(:@display_name, @display_name)
+        registered.instance_variable_set(:@targeting, @targeting.dup)
+      end
+      true
+    end
+
     def to_h
       {
         name: name,
+        display_name: display_name,
         type: type,
         status: status,
         value: stored_value,
@@ -429,25 +462,21 @@ module Magick
       load_value_from_adapter
     end
 
-    # Reload feature state from adapter (useful when feature is changed externally)
-    def reload
-      load_from_adapter
-      # Update registered feature instance if it exists
-      if Magick.features.key?(name)
-        registered = Magick.features[name]
-        registered.instance_variable_set(:@stored_value, @stored_value)
-        registered.instance_variable_set(:@status, @status)
-        registered.instance_variable_set(:@targeting, @targeting.dup)
-      end
-      self
-    end
-
     def load_from_adapter
       # Clear cached value to force reload from adapter (which checks version)
       @stored_value = nil
       @stored_value = load_value_from_adapter
       status_value = adapter_registry.get(name, 'status')
       @status = status_value ? status_value.to_sym : status
+
+      # Load description from adapter (override initial value if present in adapter)
+      description_value = adapter_registry.get(name, 'description')
+      @description = description_value if description_value
+
+      # Load display_name from adapter (override initial value if present in adapter)
+      display_name_value = adapter_registry.get(name, 'display_name')
+      @display_name = display_name_value if display_name_value
+
       targeting_value = adapter_registry.get(name, 'targeting')
       if targeting_value.is_a?(Hash)
         # Normalize keys to symbols and handle nested structures
@@ -458,6 +487,17 @@ module Magick
       else
         @targeting = {}
       end
+    end
+
+    def save_metadata_if_new
+      # Save description and display_name to adapter if they were provided in options
+      # but don't exist in adapter yet (to avoid overwriting existing values)
+      if @description && !adapter_registry.get(name, 'description')
+        adapter_registry.set(name, 'description', @description)
+      end
+      return unless @display_name && !adapter_registry.get(name, 'display_name')
+
+      adapter_registry.set(name, 'display_name', @display_name)
     end
 
     def load_value_from_adapter
@@ -653,6 +693,46 @@ module Magick
       end
 
       context
+    end
+
+    def disable_dependent_features(user_id: nil)
+      # Find all features that depend on this feature
+      dependent_features = find_dependent_features
+
+      # Disable each dependent feature by setting value directly (avoid recursion)
+      dependent_features.each do |dep_feature_name|
+        dep_feature = Magick.features[dep_feature_name.to_s] || Magick[dep_feature_name]
+        next unless dep_feature
+
+        # Set value directly to avoid recursive disable calls
+        # Clear targeting and set value to false/empty/0 based on type
+        dep_feature.instance_variable_set(:@targeting, {})
+        dep_feature.save_targeting
+
+        case dep_feature.type
+        when :boolean
+          dep_feature.set_value(false, user_id: user_id)
+        when :string
+          dep_feature.set_value('', user_id: user_id)
+        when :number
+          dep_feature.set_value(0, user_id: user_id)
+        end
+
+        # Rails 8+ event
+        if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
+          Magick::Rails::Events.feature_disabled_globally(dep_feature_name, user_id: user_id)
+        end
+      end
+    end
+
+    def find_dependent_features
+      # Find all features that have this feature in their dependencies
+      dependent_features = []
+      Magick.features.each do |_name, feature|
+        feature_deps = feature.instance_variable_get(:@dependencies) || []
+        dependent_features << feature.name if feature_deps.include?(name.to_s) || feature_deps.include?(name.to_sym)
+      end
+      dependent_features
     end
 
     def enable_targeting(type, value)

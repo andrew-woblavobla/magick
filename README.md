@@ -221,8 +221,15 @@ Create `config/features.rb`:
 
 ```ruby
 # Boolean features
-boolean_feature :new_dashboard, default: false, description: "New dashboard UI"
-boolean_feature :dark_mode, default: false, description: "Dark mode theme"
+boolean_feature :new_dashboard,
+  default: false,
+  name: "New Dashboard",
+  description: "New dashboard UI"
+
+boolean_feature :dark_mode,
+  default: false,
+  name: "Dark Mode",
+  description: "Dark mode theme"
 
 # String features
 string_feature :api_version, default: "v1", description: "API version"

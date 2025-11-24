@@ -4,10 +4,12 @@
 # Boolean features
 boolean_feature :new_dashboard,
   default: false,
+  name: "New Dashboard",
   description: "New dashboard UI with improved navigation"
 
 boolean_feature :dark_mode,
   default: false,
+  name: "Dark Mode",
   description: "Dark mode theme support"
 
 # String features

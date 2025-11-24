@@ -44,8 +44,16 @@ module Magick
       configure_redis_adapter(url: url, namespace: namespace, **options)
     end
 
-    def performance_metrics(enabled: true, **_options)
-      @performance_metrics = (PerformanceMetrics.new if enabled)
+    def performance_metrics(enabled: true, redis_tracking: nil, batch_size: 100, flush_interval: 60, **_options)
+      return unless enabled
+
+      @performance_metrics = PerformanceMetrics.new(batch_size: batch_size, flush_interval: flush_interval)
+      # Enable Redis tracking if Redis adapter is configured (or explicitly set)
+      if redis_tracking.nil?
+        # Auto-enable if Redis adapter exists
+        redis_tracking = !@redis_url.nil? || configure_redis_adapter != nil
+      end
+      @performance_metrics.enable_redis_tracking(enable: redis_tracking) if @performance_metrics
     end
 
     def audit_log(enabled: true, adapter: nil)
@@ -86,6 +94,11 @@ module Magick
       Magick.audit_log = audit_log if audit_log
       Magick.versioning = versioning if versioning
       Magick.warn_on_deprecated = warn_on_deprecated
+
+      # Enable Redis tracking for performance metrics if Redis adapter is configured
+      if Magick.performance_metrics && adapter_registry.is_a?(Adapters::Registry) && adapter_registry.redis_adapter
+        Magick.performance_metrics.enable_redis_tracking(enable: true)
+      end
     end
 
     private
