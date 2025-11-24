@@ -128,6 +128,38 @@ module Magick
       @versioning ||= Versioning.new(adapter_registry || default_adapter_registry)
     end
 
+    # Get total usage count for a feature (combines memory and Redis counts)
+    def feature_stats(feature_name)
+      return {} unless performance_metrics
+
+      {
+        usage_count: performance_metrics.usage_count(feature_name),
+        average_duration: performance_metrics.average_duration(feature_name: feature_name),
+        average_duration_by_operation: {
+          enabled: performance_metrics.average_duration(feature_name: feature_name, operation: 'enabled?'),
+          value: performance_metrics.average_duration(feature_name: feature_name, operation: 'value'),
+          get_value: performance_metrics.average_duration(feature_name: feature_name, operation: 'get_value')
+        }
+      }
+    end
+
+    # Get usage count for a feature
+    def feature_usage_count(feature_name)
+      performance_metrics&.usage_count(feature_name) || 0
+    end
+
+    # Get average duration for a feature (optionally filtered by operation)
+    def feature_average_duration(feature_name, operation: nil)
+      return 0.0 unless performance_metrics
+
+      performance_metrics.average_duration(feature_name: feature_name, operation: operation)
+    end
+
+    # Get most used features
+    def most_used_features(limit: 10)
+      performance_metrics&.most_used_features(limit: limit) || {}
+    end
+
     def reset!
       @features = {}
       @adapter_registry = nil

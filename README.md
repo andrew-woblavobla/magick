@@ -82,7 +82,12 @@ Magick.configure do
   async_updates enabled: true
 
   # Enable services
-  performance_metrics enabled: true
+  performance_metrics(
+    enabled: true,
+    redis_tracking: true,  # Auto-enabled if Redis is configured
+    batch_size: 100,       # Flush after 100 updates
+    flush_interval: 60     # Or flush every 60 seconds
+  )
   audit_log enabled: true
   versioning enabled: true
   warn_on_deprecated enabled: true
@@ -295,7 +300,16 @@ variant = feature.get_variant
 ```ruby
 feature = Magick[:advanced_feature]
 feature.add_dependency(:base_feature)
-# advanced_feature will only be enabled if base_feature is also enabled
+# advanced_feature can be enabled independently
+# However, base_feature (dependency) cannot be enabled if advanced_feature (main feature) is disabled
+# This ensures dependencies are only enabled when their parent features are enabled
+
+# Example:
+Magick[:advanced_feature].disable  # => true
+Magick[:base_feature].enable        # => false (cannot enable dependency when main feature is disabled)
+
+Magick[:advanced_feature].enable   # => true
+Magick[:base_feature].enable        # => true (now can enable dependency)
 ```
 
 #### Export/Import
@@ -322,15 +336,54 @@ Magick.versioning.rollback(:my_feature, version: 2)
 #### Performance Metrics
 
 ```ruby
-# Get average duration for feature checks
-avg_duration = Magick.performance_metrics.average_duration(feature_name: :my_feature)
+# Get comprehensive stats for a feature
+Magick.feature_stats(:my_feature)
+# => {
+#   usage_count: 1250,
+#   average_duration: 0.032,
+#   average_duration_by_operation: {
+#     enabled: 0.032,
+#     value: 0.0,
+#     get_value: 0.0
+#   }
+# }
+
+# Get just the usage count
+Magick.feature_usage_count(:my_feature)
+# => 1250
+
+# Get average duration (optionally filtered by operation)
+Magick.feature_average_duration(:my_feature)
+Magick.feature_average_duration(:my_feature, operation: 'enabled?')
 
 # Get most used features
-most_used = Magick.performance_metrics.most_used_features(limit: 10)
+Magick.most_used_features(limit: 10)
+# => {
+#   "my_feature" => 1250,
+#   "another_feature" => 890,
+#   ...
+# }
 
-# Get usage count
-count = Magick.performance_metrics.usage_count(:my_feature)
+# Direct access to performance metrics (for advanced usage)
+Magick.performance_metrics.average_duration(feature_name: :my_feature)
+Magick.performance_metrics.usage_count(:my_feature)
+Magick.performance_metrics.most_used_features(limit: 10)
 ```
+
+**Configuration:**
+
+```ruby
+Magick.configure do
+  performance_metrics(
+    enabled: true,
+    redis_tracking: true,  # Auto-enabled if Redis is configured
+    batch_size: 100,       # Flush after 100 updates
+    flush_interval: 60     # Or flush every 60 seconds
+  )
+end
+```
+
+**Note:** When `redis_tracking: true` is set, usage counts are persisted to Redis and aggregated across all processes, giving you total usage statistics.
 
 #### Audit Logging
 
@@ -351,7 +404,10 @@ Magick uses a dual-adapter strategy:
 1. **Memory Adapter**: Fast, in-memory storage with TTL support
 2. **Redis Adapter**: Persistent storage for distributed systems (optional)
 
-The registry automatically falls back from memory to Redis if a feature isn't found in memory. When features are updated, both adapters are updated simultaneously.
+The registry automatically falls back from memory to Redis if a feature isn't found in memory. When features are updated:
+- Both adapters are updated simultaneously
+- Cache invalidation messages are published via Redis Pub/Sub to notify other processes
+- Targeting updates trigger immediate cache invalidation to ensure consistency
 
 #### Memory-Only Mode
 

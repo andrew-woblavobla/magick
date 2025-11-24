@@ -48,12 +48,15 @@ module Magick
       return unless enabled
 
       @performance_metrics = PerformanceMetrics.new(batch_size: batch_size, flush_interval: flush_interval)
-      # Enable Redis tracking if Redis adapter is configured (or explicitly set)
-      if redis_tracking.nil?
-        # Auto-enable if Redis adapter exists
-        redis_tracking = !@redis_url.nil? || configure_redis_adapter != nil
+      # Store redis_tracking preference for later application
+      @performance_metrics_redis_tracking = redis_tracking
+      # Enable Redis tracking if explicitly set to true, otherwise defer to apply! method
+      if redis_tracking == true
+        @performance_metrics.enable_redis_tracking(enable: true)
+      elsif redis_tracking == false
+        @performance_metrics.enable_redis_tracking(enable: false)
       end
-      @performance_metrics.enable_redis_tracking(enable: redis_tracking) if @performance_metrics
+      # If nil, will be auto-determined in apply! method
     end
 
     def audit_log(enabled: true, adapter: nil)
@@ -95,9 +98,15 @@ module Magick
       Magick.versioning = versioning if versioning
       Magick.warn_on_deprecated = warn_on_deprecated
 
-      # Enable Redis tracking for performance metrics if Redis adapter is configured
-      if Magick.performance_metrics && adapter_registry.is_a?(Adapters::Registry) && adapter_registry.redis_adapter
-        Magick.performance_metrics.enable_redis_tracking(enable: true)
+      # Enable Redis tracking for performance metrics
+      if Magick.performance_metrics
+        # If redis_tracking was explicitly set, use that value
+        if defined?(@performance_metrics_redis_tracking) && !@performance_metrics_redis_tracking.nil?
+          Magick.performance_metrics.enable_redis_tracking(enable: @performance_metrics_redis_tracking)
+        # Otherwise, auto-enable if Redis adapter is configured
+        elsif adapter_registry.is_a?(Adapters::Registry) && adapter_registry.redis_adapter
+          Magick.performance_metrics.enable_redis_tracking(enable: true)
+        end
       end
     end
 
