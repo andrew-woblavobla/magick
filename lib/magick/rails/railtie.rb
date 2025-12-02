@@ -25,7 +25,13 @@ if defined?(Rails)
               if defined?(Redis)
                 begin
                   redis_url = app.config.respond_to?(:redis_url) ? app.config.redis_url : nil
-                  redis_client = redis_url ? ::Redis.new(url: redis_url) : ::Redis.new
+                  # Use database 1 for Magick by default to avoid conflicts with Rails cache (which uses DB 0)
+                  # Users can override this in their config/initializers/magick.rb
+                  redis_db = 1
+                  redis_options = {}
+                  redis_options[:url] = redis_url if redis_url
+                  redis_options[:db] = redis_db
+                  redis_client = redis_url ? ::Redis.new(redis_options) : ::Redis.new(db: redis_db)
                   memory_adapter = Adapters::Memory.new
                   redis_adapter = Adapters::Redis.new(redis_client)
                   magick.adapter_registry = Adapters::Registry.new(memory_adapter, redis_adapter)

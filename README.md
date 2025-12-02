@@ -10,7 +10,7 @@ A performant and memory-efficient feature toggle gem for Ruby and Rails applicat
 - **Rails Integration**: Seamless integration with Rails, including request store caching
 - **DSL Support**: Define features in a Ruby DSL file (`config/features.rb`)
 - **Thread-Safe**: All operations are thread-safe for concurrent access
-- **Performance**: Optimized for speed with memory-first caching strategy
+- **Performance**: Lightning-fast feature checks with async metrics recording and memory-first caching strategy
 - **Advanced Features**: Circuit breaker, audit logging, performance metrics, versioning, and more
 
 ## Installation
@@ -52,7 +52,8 @@ The generator creates `config/initializers/magick.rb` with sensible defaults. Yo
 ```ruby
 Magick.configure do
   # Configure Redis (optional)
-  redis url: ENV['REDIS_URL']
+  # Use database 1 by default to avoid conflicts with Rails cache (which uses DB 0)
+  redis url: ENV['REDIS_URL'], db: 1
 
   # Enable features
   performance_metrics enabled: true
@@ -73,7 +74,10 @@ Magick.configure do
   memory_ttl 7200 # 2 hours
 
   # Redis configuration
-  redis url: ENV['REDIS_URL'], namespace: 'magick:features'
+  # Use separate database (DB 1) to avoid conflicts with Rails cache (DB 0)
+  # This ensures feature toggles persist even when Rails cache is cleared
+  redis url: ENV['REDIS_URL'], namespace: 'magick:features', db: 1
+  # Or include database in URL: redis url: 'redis://localhost:6379/1'
 
   # Circuit breaker settings
   circuit_breaker threshold: 5, timeout: 60
@@ -383,7 +387,9 @@ Magick.configure do
 end
 ```
 
-**Note:** When `redis_tracking: true` is set, usage counts are persisted to Redis and aggregated across all processes, giving you total usage statistics.
+**Performance:** Metrics are recorded asynchronously in a background thread, ensuring zero overhead on feature checks. The `enabled?` method remains lightning-fast even with metrics enabled.
+
+**Note:** When `redis_tracking: true` is set, usage counts are persisted to Redis and aggregated across all processes, giving you total usage statistics. Metrics are automatically flushed in batches to minimize Redis overhead.
 
 #### Audit Logging
 
@@ -424,6 +430,9 @@ With Redis configured:
 - ✅ Persistent storage across restarts
 - ✅ Zero Redis calls on feature checks (only memory lookups)
 - ✅ Automatic cache invalidation when features change in any process
+- ✅ **Isolated from Rails cache** - Use `db: 1` to store feature toggles in a separate Redis database, ensuring they persist even when Rails cache is cleared
+
+**Important:** By default, Magick uses Redis database 1 to avoid conflicts with Rails cache (which typically uses database 0). This ensures that clearing Rails cache (`Rails.cache.clear`) won't affect your feature toggle states.
 
 ### Feature Types
 

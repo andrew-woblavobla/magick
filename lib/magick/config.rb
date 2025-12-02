@@ -3,7 +3,7 @@
 module Magick
   class Config
     attr_accessor :adapter_registry, :performance_metrics, :audit_log, :versioning, :warn_on_deprecated,
-                  :async_updates, :memory_ttl, :circuit_breaker_threshold, :circuit_breaker_timeout, :redis_url, :redis_namespace, :environment
+                  :async_updates, :memory_ttl, :circuit_breaker_threshold, :circuit_breaker_timeout, :redis_url, :redis_namespace, :redis_db, :environment
 
     def initialize
       @warn_on_deprecated = false
@@ -12,6 +12,7 @@ module Magick
       @circuit_breaker_threshold = 5
       @circuit_breaker_timeout = 60
       @redis_namespace = 'magick:features'
+      @redis_db = nil # Use default database (0) unless specified
       @environment = defined?(Rails) ? Rails.env.to_s : 'development'
     end
 
@@ -38,10 +39,11 @@ module Magick
       configure_memory_adapter(**options)
     end
 
-    def redis(url: nil, namespace: nil, **options)
+    def redis(url: nil, namespace: nil, db: nil, **options)
       @redis_url = url if url
       @redis_namespace = namespace if namespace
-      redis_adapter = configure_redis_adapter(url: url, namespace: namespace, **options)
+      @redis_db = db if db
+      redis_adapter = configure_redis_adapter(url: url, namespace: namespace, db: db, **options)
 
       # Automatically create Registry adapter if it doesn't exist
       # This allows users to just call `redis url: ...` without needing to call `adapter :registry`
@@ -161,23 +163,53 @@ module Magick
       adapter
     end
 
-    def configure_redis_adapter(url: nil, namespace: nil, client: nil)
+    def configure_redis_adapter(url: nil, namespace: nil, db: nil, client: nil)
       return nil unless defined?(Redis)
 
       url ||= @redis_url
       namespace ||= @redis_namespace
+      db ||= @redis_db
 
       redis_client = client || begin
+        redis_options = {}
+
         if url
-          ::Redis.new(url: url)
+          # Parse URL to extract database number if present
+          parsed_url = URI.parse(url) rescue nil
+          db_from_url = nil
+          if parsed_url && parsed_url.path && parsed_url.path.length > 1
+            # Redis URL format: redis://host:port/db_number
+            db_from_url = parsed_url.path[1..-1].to_i
+          end
+
+          # Use db parameter if provided, otherwise use db from URL, otherwise nil (default DB 0)
+          final_db = db || db_from_url
+          redis_options[:db] = final_db if final_db
+          redis_options[:url] = url
+          ::Redis.new(redis_options)
         else
-          ::Redis.new
+          redis_options[:db] = db if db
+          ::Redis.new(redis_options)
         end
       rescue StandardError
         nil
       end
 
       return nil unless redis_client
+
+      # If db was specified but not in URL, select it explicitly
+      # This handles cases where URL doesn't include db number
+      if db && url
+        parsed_url = URI.parse(url) rescue nil
+        url_has_db = parsed_url && parsed_url.path && parsed_url.path.length > 1
+        unless url_has_db
+          begin
+            redis_client.select(db)
+          rescue StandardError
+            # Ignore if SELECT fails (some Redis setups don't support SELECT, e.g., Redis Cluster)
+          end
+        end
+      end
 
       adapter = Adapters::Redis.new(redis_client)
       adapter.instance_variable_set(:@namespace, namespace) if namespace
