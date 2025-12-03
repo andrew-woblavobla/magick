@@ -3,7 +3,7 @@
 module Magick
   class Config
     attr_accessor :adapter_registry, :performance_metrics, :audit_log, :versioning, :warn_on_deprecated,
-                  :async_updates, :memory_ttl, :circuit_breaker_threshold, :circuit_breaker_timeout, :redis_url, :redis_namespace, :redis_db, :environment
+                  :async_updates, :memory_ttl, :circuit_breaker_threshold, :circuit_breaker_timeout, :redis_url, :redis_namespace, :redis_db, :environment, :active_record_model_class, :enable_admin_ui
 
     def initialize
       @warn_on_deprecated = false
@@ -14,6 +14,7 @@ module Magick
       @redis_namespace = 'magick:features'
       @redis_db = nil # Use default database (0) unless specified
       @environment = defined?(Rails) ? Rails.env.to_s : 'development'
+      @enable_admin_ui = false # Admin UI disabled by default
     end
 
     # DSL methods for configuration
@@ -23,6 +24,8 @@ module Magick
         configure_memory_adapter(**options)
       when :redis
         configure_redis_adapter(**options)
+      when :active_record
+        configure_active_record_adapter(**options)
       when :registry
         if block_given?
           instance_eval(&block)
@@ -58,6 +61,7 @@ module Magick
         end
       else
         memory_adapter = configure_memory_adapter
+        active_record_adapter = configure_active_record_adapter if defined?(::ActiveRecord::Base)
         cb = Magick::CircuitBreaker.new(
           failure_threshold: @circuit_breaker_threshold,
           timeout: @circuit_breaker_timeout
@@ -65,12 +69,47 @@ module Magick
         @adapter_registry = Adapters::Registry.new(
           memory_adapter,
           redis_adapter,
+          active_record_adapter: active_record_adapter,
           circuit_breaker: cb,
           async: @async_updates
         )
       end
 
       redis_adapter
+    end
+
+    def active_record(model_class: nil, primary: false, **options)
+      @active_record_model_class = model_class if model_class
+      @active_record_primary = primary
+      active_record_adapter = configure_active_record_adapter(model_class: model_class, **options)
+
+      # Automatically create Registry adapter if it doesn't exist
+      if @adapter_registry
+        # If registry already exists, update it with the new Active Record adapter
+        if active_record_adapter && @adapter_registry.is_a?(Adapters::Registry)
+          @adapter_registry.instance_variable_set(:@active_record_adapter, active_record_adapter)
+          # Update primary if specified
+          @adapter_registry.instance_variable_set(:@primary, :active_record) if primary
+        end
+      else
+        memory_adapter = configure_memory_adapter
+        redis_adapter = configure_redis_adapter
+        cb = Magick::CircuitBreaker.new(
+          failure_threshold: @circuit_breaker_threshold,
+          timeout: @circuit_breaker_timeout
+        )
+        primary_adapter = primary ? :active_record : :memory
+        @adapter_registry = Adapters::Registry.new(
+          memory_adapter,
+          redis_adapter,
+          active_record_adapter: active_record_adapter,
+          circuit_breaker: cb,
+          async: @async_updates,
+          primary: primary_adapter
+        )
+      end
+
+      active_record_adapter
     end
 
     def performance_metrics(enabled: true, redis_tracking: nil, batch_size: 100, flush_interval: 60, **_options)
@@ -122,6 +161,10 @@ module Magick
       @environment = name.to_s
     end
 
+    def admin_ui(enabled: true)
+      @enable_admin_ui = enabled
+    end
+
     def apply!
       # Apply configuration to Magick module
       Magick.adapter_registry = adapter_registry if adapter_registry
@@ -151,6 +194,11 @@ module Magick
       Magick.audit_log = audit_log if audit_log
       Magick.versioning = versioning if versioning
       Magick.warn_on_deprecated = warn_on_deprecated
+
+      # Load optional components if enabled
+      return unless @enable_admin_ui && defined?(Rails)
+
+      require_relative '../magick/admin_ui' unless defined?(Magick::AdminUI)
     end
 
     private
@@ -175,7 +223,11 @@ module Magick
 
         if url
           # Parse URL to extract database number if present
-          parsed_url = URI.parse(url) rescue nil
+          parsed_url = begin
+            URI.parse(url)
+          rescue StandardError
+            nil
+          end
           db_from_url = nil
           if parsed_url && parsed_url.path && parsed_url.path.length > 1
             # Redis URL format: redis://host:port/db_number
@@ -200,7 +252,11 @@ module Magick
       # If db was specified but not in URL, select it explicitly
       # This handles cases where URL doesn't include db number
       if db && url
-        parsed_url = URI.parse(url) rescue nil
+        parsed_url = begin
+          URI.parse(url)
+        rescue StandardError
+          nil
+        end
         url_has_db = parsed_url && parsed_url.path && parsed_url.path.length > 1
         unless url_has_db
           begin
@@ -216,9 +272,23 @@ module Magick
       adapter
     end
 
-    def configure_registry_adapter(memory: nil, redis: nil, async: nil, circuit_breaker: nil)
+    def configure_active_record_adapter(model_class: nil, **_options)
+      return nil unless defined?(::ActiveRecord::Base)
+
+      model_class ||= @active_record_model_class
+      Adapters::ActiveRecord.new(model_class: model_class)
+    rescue StandardError => e
+      if defined?(Rails) && Rails.env.development?
+        warn "Magick: Failed to initialize ActiveRecord adapter: #{e.message}"
+      end
+      nil
+    end
+
+    def configure_registry_adapter(memory: nil, redis: nil, active_record: nil, async: nil, circuit_breaker: nil,
+                                   primary: nil)
       memory_adapter = memory || configure_memory_adapter
       redis_adapter = redis || configure_redis_adapter
+      active_record_adapter = active_record || configure_active_record_adapter
 
       cb = circuit_breaker || Magick::CircuitBreaker.new(
         failure_threshold: @circuit_breaker_threshold,
@@ -226,12 +296,15 @@ module Magick
       )
 
       async_enabled = async.nil? ? @async_updates : async
+      primary_adapter = primary || (@active_record_primary ? :active_record : :memory)
 
       @adapter_registry = Adapters::Registry.new(
         memory_adapter,
         redis_adapter,
+        active_record_adapter: active_record_adapter,
         circuit_breaker: cb,
-        async: async_enabled
+        async: async_enabled,
+        primary: primary_adapter
       )
     end
 
@@ -239,7 +312,8 @@ module Magick
       @default_adapter_registry ||= begin
         memory_adapter = Adapters::Memory.new
         redis_adapter = configure_redis_adapter
-        Adapters::Registry.new(memory_adapter, redis_adapter)
+        active_record_adapter = configure_active_record_adapter if defined?(::ActiveRecord::Base)
+        Adapters::Registry.new(memory_adapter, redis_adapter, active_record_adapter: active_record_adapter)
       end
     end
   end

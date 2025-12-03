@@ -33,7 +33,7 @@ Or install it yourself as:
 $ gem install magick
 ```
 
-## Installation
+## Setup
 
 After adding the gem to your Gemfile and running `bundle install`, generate the configuration file:
 
@@ -42,6 +42,22 @@ rails generate magick:install
 ```
 
 This will create `config/initializers/magick.rb` with a basic configuration.
+
+### ActiveRecord Adapter (Optional)
+
+If you want to use ActiveRecord as a persistent storage backend, generate the migration:
+
+```bash
+rails generate magick:active_record
+```
+
+This will create a migration file that creates the `magick_features` table. Then run:
+
+```bash
+rails db:migrate
+```
+
+**Note:** The ActiveRecord adapter is optional and only needed if you want database-backed feature flags. The gem works perfectly fine with just the memory adapter or Redis adapter.
 
 ## Configuration
 
@@ -95,6 +111,9 @@ Magick.configure do
   audit_log enabled: true
   versioning enabled: true
   warn_on_deprecated enabled: true
+
+  # Enable Admin UI (optional)
+  admin_ui enabled: true
 end
 ```
 
@@ -433,6 +452,186 @@ With Redis configured:
 - ✅ **Isolated from Rails cache** - Use `db: 1` to store feature toggles in a separate Redis database, ensuring they persist even when Rails cache is cleared
 
 **Important:** By default, Magick uses Redis database 1 to avoid conflicts with Rails cache (which typically uses database 0). This ensures that clearing Rails cache (`Rails.cache.clear`) won't affect your feature toggle states.
+
+#### ActiveRecord Adapter (Optional)
+
+The ActiveRecord adapter provides database-backed persistent storage for feature flags. It's useful when you want to:
+- Store feature flags in your application database
+- Use ActiveRecord models for feature management
+- Have a fallback storage layer
+- Work with PostgreSQL, MySQL, SQLite, or any ActiveRecord-supported database
+
+**Setup:**
+
+1. Generate the migration:
+   ```bash
+   rails generate magick:active_record
+   rails db:migrate
+   ```
+
+   **With UUID primary keys:**
+   ```bash
+   rails generate magick:active_record --uuid
+   ```
+
+2. Configure in `config/initializers/magick.rb`:
+   ```ruby
+   Magick.configure do
+     active_record # Uses default MagickFeature model
+     # Or specify a custom model:
+     # active_record model_class: YourCustomModel
+   end
+   ```
+
+The adapter automatically creates the `magick_features` table if it doesn't exist, but using the generator is recommended for production applications.
+
+**PostgreSQL Support:**
+
+The generator automatically detects PostgreSQL and uses `jsonb` for the `data` column, providing:
+- Better performance with native JSON queries
+- Native JSON indexing and querying capabilities
+- Type-safe JSON storage
+
+For other databases (MySQL, SQLite, etc.), it uses `text` with serialized JSON.
+
+**UUID Primary Keys:**
+
+When using the `--uuid` flag:
+- Creates table with `id: :uuid` instead of integer primary key
+- Enables `pgcrypto` extension for PostgreSQL (required for UUID generation)
+- Works with other databases using their native UUID support
+
+**Note:** The ActiveRecord adapter works as a fallback in the adapter chain: Memory → Redis → ActiveRecord. It's automatically included if ActiveRecord is available and configured.
+
+**Adapter Chain:**
+
+The adapter registry uses a fallback strategy:
+1. **Memory Adapter** (first) - Fast, in-memory lookups
+2. **Redis Adapter** (second) - Persistent, distributed storage
+3. **ActiveRecord Adapter** (third) - Database-backed fallback
+
+When a feature is requested:
+- First checks memory cache (fastest)
+- Falls back to Redis if not in memory
+- Falls back to ActiveRecord if Redis is unavailable or returns nil
+- Updates all adapters when features are modified
+
+This ensures maximum performance while maintaining persistence and reliability.
+
+### Admin UI
+
+Magick includes a web-based Admin UI for managing feature flags. It's a Rails Engine that provides a user-friendly interface for viewing, enabling, disabling, and configuring features.
+
+**Setup:**
+
+1. Enable Admin UI in `config/initializers/magick.rb`:
+
+```ruby
+Magick.configure do
+  admin_ui enabled: true
+end
+```
+
+2. Configure roles (optional) for targeting management:
+
+```ruby
+Magick::AdminUI.configure do |config|
+  config.available_roles = ['admin', 'user', 'manager', 'guest']
+end
+```
+
+3. Mount the engine in `config/routes.rb`:
+
+```ruby
+Rails.application.routes.draw do
+  # ... your other routes ...
+
+  # With authentication (recommended for production)
+  authenticate :admin_user do
+    mount Magick::AdminUI::Engine, at: '/magick'
+  end
+
+  # Or without authentication (development only)
+  # mount Magick::AdminUI::Engine, at: '/magick'
+end
+```
+
+**Access:**
+
+Once mounted, visit `/magick` in your browser to access the Admin UI.
+
+**Features:**
+
+- **Feature List**: View all registered features with their current status, type, and description
+- **Feature Details**: View detailed information about each feature including:
+  - Current value/status
+  - Targeting rules (users, groups, roles, percentages, etc.)
+  - Performance statistics (usage count, average duration)
+  - Feature metadata (type, default value, dependencies)
+- **Enable/Disable**: Quickly enable or disable features globally
+- **Targeting Management**: Configure targeting rules through a user-friendly interface:
+  - **Role Targeting**: Select roles from a configured list (checkboxes)
+  - **User Targeting**: Enter user IDs (comma-separated)
+  - **Visual Display**: See all active targeting rules with badges
+- **Edit Features**: Update feature values (boolean, string, number) directly from the UI
+- **Statistics**: View performance metrics and usage statistics for each feature
+
+**Targeting Management:**
+
+The Admin UI provides a comprehensive targeting interface:
+
+1. **Role Targeting**:
+   - Configure available roles via `Magick::AdminUI.configure`
+   - Select multiple roles using checkboxes
+   - Roles are automatically added/removed when checkboxes are toggled
+
+2. **User Targeting**:
+   - Enter user IDs as comma-separated values (e.g., `123, 456, 789`)
+   - Add or remove users dynamically
+   - Clear all user targeting by leaving the field empty
+
+3. **Visual Feedback**:
+   - All targeting rules are displayed as badges in the feature details view
+   - Easy to see which roles/users have access to each feature
+
+**Routes:**
+
+The Admin UI provides the following routes:
+
+- `GET /magick` - Feature list (index)
+- `GET /magick/features/:id` - Feature details
+- `GET /magick/features/:id/edit` - Edit feature
+- `PUT /magick/features/:id` - Update feature value
+- `PUT /magick/features/:id/enable` - Enable feature globally
+- `PUT /magick/features/:id/disable` - Disable feature globally
+- `PUT /magick/features/:id/enable_for_user` - Enable feature for specific user
+- `PUT /magick/features/:id/enable_for_role` - Enable feature for specific role
+- `PUT /magick/features/:id/disable_for_role` - Disable feature for specific role
+- `PUT /magick/features/:id/update_targeting` - Update targeting rules (roles and users)
+- `GET /magick/stats/:id` - View feature statistics
+
+**Security:**
+
+The Admin UI is a basic Rails Engine without built-in authentication. **You should add authentication/authorization** before mounting it in production. For example:
+
+```ruby
+# config/routes.rb
+Rails.application.routes.draw do
+  # Using Devise
+  authenticate :admin_user do
+    mount Magick::AdminUI::Engine, at: '/magick'
+  end
+
+  # Or using session-based authentication
+  constraints(->(request) { request.session[:user_id].present? && request.session[:admin] }) do
+    mount Magick::AdminUI::Engine, at: '/magick'
+  end
+end
+```
+
+Or use a before_action in your ApplicationController if you mount it at the application level.
+
+**Note:** The Admin UI is optional and only loaded when explicitly enabled in configuration. It requires Rails to be available.
 
 ### Feature Types
 

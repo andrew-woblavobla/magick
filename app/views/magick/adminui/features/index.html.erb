@@ -1,0 +1,79 @@
+<div class="card">
+  <div class="card-header">
+    <h2>Feature Flags</h2>
+    <div>
+      <span class="badge badge-info"><%= @features.size %> features</span>
+    </div>
+  </div>
+
+  <% if @features.empty? %>
+    <div class="empty-state">
+      <h3>No features found</h3>
+      <p>Register features in your application to see them here.</p>
+    </div>
+  <% else %>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Status</th>
+          <th>Value</th>
+          <th>Description</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% @features.each do |feature| %>
+          <tr>
+            <td data-label="Name">
+              <strong><%= feature.display_name || feature.name %></strong>
+              <br>
+              <small style="color: #999;"><%= feature.name %></small>
+            </td>
+            <td data-label="Type">
+              <span class="badge badge-info">
+                <%= feature.type.to_s.capitalize %>
+              </span>
+            </td>
+            <td data-label="Status">
+              <% case feature.status.to_sym %>
+              <% when :active %>
+                <span class="badge badge-success">Active</span>
+              <% when :deprecated %>
+                <span class="badge badge-warning">Deprecated</span>
+              <% when :inactive %>
+                <span class="badge badge-danger">Inactive</span>
+              <% else %>
+                <span class="badge"><%= feature.status.to_s.capitalize %></span>
+              <% end %>
+            </td>
+            <td data-label="Value">
+              <% if feature.type == :boolean %>
+                <% targeting = feature.instance_variable_get(:@targeting) || {} %>
+                <% if targeting.any? %>
+                  <span class="badge badge-warning">Partially Enabled</span>
+                <% elsif feature.enabled? %>
+                  <span class="badge badge-success">Enabled</span>
+                <% else %>
+                  <span class="badge badge-danger">Disabled</span>
+                <% end %>
+              <% else %>
+                <code><%= feature.get_value.inspect %></code>
+              <% end %>
+            </td>
+            <td data-label="Description">
+              <%= feature.description || '<em>No description</em>'.html_safe %>
+            </td>
+            <td data-label="Actions">
+              <div class="btn-group">
+                <a href="<%= magick_admin_ui.feature_path(feature.name) %>" class="btn btn-primary btn-sm">View</a>
+                <a href="<%= magick_admin_ui.edit_feature_path(feature.name) %>" class="btn btn-secondary btn-sm">Edit</a>
+              </div>
+            </td>
+          </tr>
+        <% end %>
+      </tbody>
+    </table>
+  <% end %>
+</div>

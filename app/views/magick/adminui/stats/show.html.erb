@@ -1,0 +1,67 @@
+<div class="card">
+  <div class="card-header">
+    <h2>Statistics: <%= @feature.display_name || @feature.name %></h2>
+    <div class="btn-group">
+      <a href="<%= magick_admin_ui.feature_path(@feature.name) %>" class="btn btn-secondary btn-sm">← Back to Feature</a>
+    </div>
+  </div>
+
+  <% if @stats && @stats.any? %>
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-value"><%= @stats[:usage_count] || 0 %></div>
+        <div class="stat-label">Total Usage</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value"><%= sprintf('%.3f', @stats[:average_duration] || 0) %>ms</div>
+        <div class="stat-label">Avg Duration</div>
+      </div>
+      <% if @stats[:average_duration_by_operation] %>
+        <% @stats[:average_duration_by_operation].each do |operation, duration| %>
+          <div class="stat-card">
+            <div class="stat-value"><%= sprintf('%.3f', duration || 0) %>ms</div>
+            <div class="stat-label"><%= operation.to_s.humanize %></div>
+          </div>
+        <% end %>
+      <% end %>
+    </div>
+
+    <div class="card" style="margin-top: 20px;">
+      <h3 style="margin-bottom: 16px;">Performance Metrics</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Metric</th>
+            <th>Value</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Usage Count</td>
+            <td><strong><%= @stats[:usage_count] || 0 %></strong></td>
+          </tr>
+          <tr>
+            <td>Average Duration</td>
+            <td><strong><%= sprintf('%.3f', @stats[:average_duration] || 0) %>ms</strong></td>
+          </tr>
+          <% if @stats[:average_duration_by_operation] %>
+            <% @stats[:average_duration_by_operation].each do |operation, duration| %>
+              <tr>
+                <td>Average Duration (<%= operation.to_s.humanize %>)</td>
+                <td><strong><%= sprintf('%.3f', duration || 0) %>ms</strong></td>
+              </tr>
+            <% end %>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+  <% else %>
+    <div class="empty-state">
+      <h3>No statistics available</h3>
+      <p>Performance metrics are not enabled or no data has been collected yet.</p>
+      <p style="margin-top: 10px; font-size: 14px; color: #999;">
+        Enable performance metrics in your Magick configuration to start collecting statistics.
+      </p>
+    </div>
+  <% end %>
+</div>

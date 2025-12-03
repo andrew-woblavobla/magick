@@ -5,11 +5,14 @@ module Magick
     class Registry
       CACHE_INVALIDATION_CHANNEL = 'magick:cache:invalidate'
 
-      def initialize(memory_adapter, redis_adapter = nil, circuit_breaker: nil, async: false)
+      def initialize(memory_adapter, redis_adapter = nil, active_record_adapter: nil, circuit_breaker: nil,
+                     async: false, primary: nil)
         @memory_adapter = memory_adapter
         @redis_adapter = redis_adapter
+        @active_record_adapter = active_record_adapter
         @circuit_breaker = circuit_breaker || Magick::CircuitBreaker.new
         @async = async
+        @primary = primary || :memory # :memory, :redis, or :active_record
         @subscriber_thread = nil
         @subscriber = nil
         # Only start Pub/Sub subscriber if Redis is available
@@ -19,7 +22,7 @@ module Magick
 
       def get(feature_name, key)
         # Try memory first (fastest) - no Redis calls needed thanks to Pub/Sub invalidation
-        value = memory_adapter.get(feature_name, key)
+        value = memory_adapter.get(feature_name, key) if memory_adapter
         return value unless value.nil?
 
         # Fall back to Redis if available
@@ -27,10 +30,25 @@ module Magick
           begin
             value = redis_adapter.get(feature_name, key)
             # Update memory cache if found in Redis
-            memory_adapter.set(feature_name, key, value) if value
+            if value && memory_adapter
+              memory_adapter.set(feature_name, key, value)
+              return value
+            end
+            # If Redis returns nil, continue to next adapter
+          rescue StandardError, AdapterError
+            # Redis failed, continue to next adapter
+          end
+        end
+
+        # Fall back to Active Record if available
+        if active_record_adapter
+          begin
+            value = active_record_adapter.get(feature_name, key)
+            # Update memory cache if found in Active Record
+            memory_adapter.set(feature_name, key, value) if value && memory_adapter
             return value
-          rescue AdapterError
-            # Redis failed, return nil
+          rescue StandardError, AdapterError
+            # Active Record failed, return nil
             nil
           end
         end
@@ -40,55 +58,88 @@ module Magick
 
       def set(feature_name, key, value)
         # Update memory first (always synchronous)
-        memory_adapter.set(feature_name, key, value)
+        memory_adapter&.set(feature_name, key, value)
 
         # Update Redis if available
-        return unless redis_adapter
+        if redis_adapter
+          update_redis = proc do
+            circuit_breaker.call do
+              redis_adapter.set(feature_name, key, value)
+            end
+          rescue AdapterError => e
+            # Log error but don't fail - memory is updated
+            warn "Failed to update Redis: #{e.message}" if defined?(Rails) && Rails.env.development?
+          end
 
-        update_redis = proc do
-          circuit_breaker.call do
-            redis_adapter.set(feature_name, key, value)
+          if @async && defined?(Thread)
+            # For async updates, publish cache invalidation synchronously
+            # This ensures other processes are notified immediately, even if Redis update is delayed
+            publish_cache_invalidation(feature_name)
+            Thread.new { update_redis.call }
+          else
+            update_redis.call
             # Publish cache invalidation message to notify other processes
             publish_cache_invalidation(feature_name)
           end
-        rescue AdapterError => e
-          # Log error but don't fail - memory is updated
-          warn "Failed to update Redis: #{e.message}" if defined?(Rails) && Rails.env.development?
         end
 
-        if @async && defined?(Thread)
-          Thread.new { update_redis.call }
-        else
-          update_redis.call
+        # Always update Active Record if available (as fallback/persistence layer)
+        return unless active_record_adapter
+
+        begin
+          active_record_adapter.set(feature_name, key, value)
+        rescue AdapterError => e
+          # Log error but don't fail
+          warn "Failed to update Active Record: #{e.message}" if defined?(Rails) && Rails.env.development?
         end
       end
 
       def delete(feature_name)
-        memory_adapter.delete(feature_name)
-        return unless redis_adapter
+        memory_adapter&.delete(feature_name)
+
+        if redis_adapter
+          begin
+            redis_adapter.delete(feature_name)
+            # Publish cache invalidation message
+            publish_cache_invalidation(feature_name)
+          rescue AdapterError
+            # Continue even if Redis fails
+          end
+        end
+
+        return unless active_record_adapter
 
         begin
-          redis_adapter.delete(feature_name)
-          # Publish cache invalidation message
-          publish_cache_invalidation(feature_name)
+          active_record_adapter.delete(feature_name)
         rescue AdapterError
-          # Continue even if Redis fails
+          # Continue even if Active Record fails
         end
       end
 
       def exists?(feature_name)
-        memory_adapter.exists?(feature_name) || (redis_adapter&.exists?(feature_name) == true)
+        return true if memory_adapter&.exists?(feature_name)
+        return true if redis_adapter&.exists?(feature_name) == true
+        return true if active_record_adapter&.exists?(feature_name) == true
+
+        false
       end
 
       def all_features
-        memory_features = memory_adapter.all_features
-        redis_features = redis_adapter&.all_features || []
-        (memory_features + redis_features).uniq
+        features = []
+        features += memory_adapter.all_features if memory_adapter
+        features += redis_adapter.all_features if redis_adapter
+        features += active_record_adapter.all_features if active_record_adapter
+        features.uniq
       end
 
       # Explicitly trigger cache invalidation for a feature
       # This is useful for targeting updates that need immediate cache invalidation
+      # Invalidates memory cache in current process AND publishes to Redis for other processes
       def invalidate_cache(feature_name)
+        # Invalidate memory cache in current process immediately
+        memory_adapter&.delete(feature_name)
+
+        # Publish to Redis Pub/Sub to invalidate cache in other processes
         publish_cache_invalidation(feature_name)
       end
 
@@ -104,11 +155,9 @@ module Magick
         redis_adapter.instance_variable_get(:@redis)
       end
 
-      private
-
-      attr_reader :memory_adapter, :redis_adapter, :circuit_breaker
-
-      # Publish cache invalidation message to Redis Pub/Sub
+      # Publish cache invalidation message to Redis Pub/Sub (without deleting local memory cache)
+      # This is useful when you've just updated the cache and want to notify other processes
+      # but keep the local memory cache intact
       def publish_cache_invalidation(feature_name)
         return unless redis_adapter
 
@@ -121,6 +170,10 @@ module Magick
         end
       end
 
+      private
+
+      attr_reader :memory_adapter, :redis_adapter, :active_record_adapter, :circuit_breaker
+
       # Start a background thread to listen for cache invalidation messages
       def start_cache_invalidation_subscriber
         return unless redis_adapter && defined?(Thread)
@@ -132,8 +185,28 @@ module Magick
           @subscriber = redis_client.dup
           @subscriber.subscribe(CACHE_INVALIDATION_CHANNEL) do |on|
             on.message do |_channel, feature_name|
+              feature_name_str = feature_name.to_s
+
               # Invalidate memory cache for this feature
-              memory_adapter.delete(feature_name)
+              memory_adapter.delete(feature_name_str) if memory_adapter
+
+              # Also reload the feature instance in Magick.features if it exists
+              # This ensures the feature instance has the latest targeting and values
+              if defined?(Magick) && Magick.features.key?(feature_name_str)
+                feature = Magick.features[feature_name_str]
+                if feature.respond_to?(:reload)
+                  feature.reload
+                  # Log for debugging (only in development)
+                  if defined?(Rails) && Rails.env.development?
+                    Rails.logger.debug "Magick: Reloaded feature '#{feature_name_str}' after cache invalidation"
+                  end
+                end
+              end
+            rescue StandardError => e
+              # Log error but don't crash the subscriber thread
+              if defined?(Rails) && Rails.env.development?
+                warn "Magick: Error processing cache invalidation for '#{feature_name}': #{e.message}"
+              end
             end
           end
         rescue StandardError => e

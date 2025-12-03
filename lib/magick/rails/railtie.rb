@@ -10,6 +10,15 @@ if defined?(Rails)
   module Magick
     module Rails
       class Railtie < ::Rails::Railtie
+        # Configure inflector to keep AdminUI as AdminUI (not AdminUi)
+        # This must run very early, before any routes or constants are loaded
+        initializer 'magick.inflector', before: :set_load_path do
+          ActiveSupport::Inflector.inflections(:en) do |inflect|
+            inflect.acronym 'AdminUI'
+            inflect.acronym 'UI'
+          end
+        end
+
         # Make DSL available early so it works in config/initializers/features.rb
         initializer 'magick.dsl', before: :load_config_initializers do
           # Ensure DSL is available globally for initializers
@@ -54,17 +63,13 @@ if defined?(Rails)
           end
 
           # Ensure adapter_registry is always set (fallback to default if not configured)
-          unless Magick.adapter_registry
-            Magick.adapter_registry = Magick.default_adapter_registry
-          end
+          Magick.adapter_registry = Magick.default_adapter_registry unless Magick.adapter_registry
 
           # Ensure adapter_registry is set and Redis tracking is enabled after all initializers have run
           # This ensures user's config/initializers/magick.rb has been loaded
           config.after_initialize do
             # Ensure adapter_registry is set (fallback to default if not configured)
-            unless Magick.adapter_registry
-              Magick.adapter_registry = Magick.default_adapter_registry
-            end
+            Magick.adapter_registry = Magick.default_adapter_registry unless Magick.adapter_registry
 
             # Force enable Redis tracking if Redis adapter is available
             # This is a final safety net to ensure stats are collected

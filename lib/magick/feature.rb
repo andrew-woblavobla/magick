@@ -107,6 +107,20 @@ module Magick
         # Check complex conditions
         return false if targeting[:complex_conditions] && !complex_conditions_match?(context,
                                                                                      targeting[:complex_conditions])
+
+        # Check user/group/role/percentage targeting
+        targeting_result = check_targeting(context)
+        if targeting_result.nil?
+          # Targeting doesn't match - return false
+          return false
+        else
+          # Targeting matches - for boolean features, return true directly
+          # For string/number features, still check the value
+          if type == :boolean
+            return true
+          end
+          # For string/number, continue to check value below
+        end
       end
 
       # Get value and check based on type
@@ -151,7 +165,30 @@ module Magick
       # Fast path: check targeting rules first (only if targeting exists)
       unless @_targeting_empty
         targeting_result = check_targeting(context)
-        return targeting_result unless targeting_result.nil?
+        # If targeting matches (returns truthy), return the stored value
+        # If targeting doesn't match (returns nil), continue to return default value
+        unless targeting_result.nil?
+          # Targeting matches - return stored value (or load it if not initialized)
+          if @stored_value_initialized
+            return @stored_value
+          else
+            # Load from adapter
+            loaded_value = load_value_from_adapter
+            if loaded_value.nil?
+              # Value not found in adapter, use default and cache it
+              @stored_value = default_value
+              @stored_value_initialized = true
+              return default_value
+            else
+              # Value found in adapter, use it and mark as initialized
+              @stored_value = loaded_value
+              @stored_value_initialized = true
+              return loaded_value
+            end
+          end
+        end
+        # Targeting doesn't match - return default value
+        return default_value
       end
 
       # Fast path: use cached value if initialized (avoid adapter calls)
@@ -524,6 +561,30 @@ module Magick
       }
     end
 
+    def save_targeting
+      # Save targeting to adapter (this updates memory synchronously, then Redis/AR)
+      adapter_registry.set(name, 'targeting', targeting)
+
+      # Update the feature in Magick.features if it's registered
+      if Magick.features.key?(name)
+        Magick.features[name].instance_variable_set(:@targeting, targeting.dup)
+        # Update targeting empty cache for performance
+        Magick.features[name].instance_variable_set(:@_targeting_empty, targeting.empty?)
+      end
+
+      # Update local targeting empty cache for performance
+      @_targeting_empty = targeting.empty?
+
+      # Explicitly publish cache invalidation to other processes via Pub/Sub
+      # This ensures other Rails app instances/consoles invalidate their cache and reload
+      # Note: We don't invalidate local cache here because we just updated it above
+      # The set method publishes cache invalidation, but we also publish here to ensure
+      # it happens even if Redis update fails or is async
+      if adapter_registry.respond_to?(:publish_cache_invalidation)
+        adapter_registry.publish_cache_invalidation(name)
+      end
+    end
+
     private
 
     attr_reader :targeting
@@ -845,28 +906,6 @@ module Magick
       end
 
       true
-    end
-
-    def save_targeting
-      # Save targeting to adapter (this triggers cache invalidation via Pub/Sub)
-      adapter_registry.set(name, 'targeting', targeting)
-
-      # Update the feature in Magick.features if it's registered
-      if Magick.features.key?(name)
-        Magick.features[name].instance_variable_set(:@targeting, targeting.dup)
-        # Update targeting empty cache for performance
-        Magick.features[name].instance_variable_set(:@_targeting_empty, targeting.empty?)
-      end
-
-      # Update local targeting empty cache for performance
-      @_targeting_empty = targeting.empty?
-
-      # Explicitly trigger cache invalidation for targeting updates
-      # Targeting changes affect enabled? checks, so we need immediate cache invalidation
-      # even if async updates are enabled
-      return unless adapter_registry.respond_to?(:invalidate_cache)
-
-      adapter_registry.invalidate_cache(name)
     end
 
     def default_for_type

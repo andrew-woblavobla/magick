@@ -5,6 +5,12 @@ require_relative 'magick/feature'
 require_relative 'magick/adapters/base'
 require_relative 'magick/adapters/memory'
 require_relative 'magick/adapters/redis'
+# Active Record adapter is loaded conditionally - only if ActiveRecord is available
+begin
+  require_relative 'magick/adapters/active_record' if defined?(::ActiveRecord::Base)
+rescue LoadError, NameError
+  # ActiveRecord not available, skip
+end
 require_relative 'magick/adapters/registry'
 require_relative 'magick/targeting/base'
 require_relative 'magick/targeting/user'
@@ -21,6 +27,9 @@ require_relative 'magick/versioning'
 require_relative 'magick/circuit_breaker'
 require_relative 'magick/testing_helpers'
 require_relative 'magick/feature_dependency'
+require_relative 'magick/documentation'
+# AdminUI is loaded conditionally via configuration
+# It is not loaded by default - must be enabled in Magick.configure
 require_relative 'magick/config'
 
 # Always load DSL - it will make itself available when Rails is detected
