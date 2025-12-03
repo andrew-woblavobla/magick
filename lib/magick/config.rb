@@ -198,6 +198,8 @@ module Magick
       # Load optional components if enabled
       return unless @enable_admin_ui && defined?(Rails)
 
+      # Load Admin UI - routes need to be drawn during initialization, not after
+      # The engine's isolate_namespace should prevent interference with Warden/Devise
       require_relative '../magick/admin_ui' unless defined?(Magick::AdminUI)
     end
 

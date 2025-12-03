@@ -16,10 +16,14 @@ module Magick
 
       engine_name 'magick_admin_ui'
 
-      # Ensure the engine doesn't interfere with Warden/Devise middleware
-      # Rails engines by default inherit middleware from the main app, which is what we want
-      # We don't add any custom middleware that could interfere with Warden/Devise
-      # The engine should work alongside existing authentication middleware without modification
+      # Critical fix: Prevent the engine from interfering with Warden/Devise
+      # Rails engines with isolate_namespace create their own middleware stack
+      # This can break Warden/Devise in the main app if not handled correctly
+      # We ensure the engine doesn't modify the main app's middleware or request handling
+
+      # Don't add any middleware that could interfere
+      # The engine will use its own middleware stack (due to isolate_namespace)
+      # but this shouldn't affect the main app's middleware stack
 
       # Rails engines automatically detect app/views and app/controllers directories
       # With isolate_namespace, views should be at:
@@ -31,8 +35,8 @@ module Magick
       config.autoload_paths += %W[#{root}/app/controllers] if root.join('app', 'controllers').exist?
 
       # Explicitly require controllers early to ensure they're loaded when gem is from RubyGems
-      # This initializer runs before routes are drawn
-      initializer 'magick.admin_ui.require_controllers', before: :load_config_initializers do
+      # This initializer runs after Warden/Devise is set up to avoid interfering with authentication
+      initializer 'magick.admin_ui.require_controllers', after: :load_config_initializers do
         engine_root = Magick::AdminUI::Engine.root
         controller_path = engine_root.join('app', 'controllers', 'magick', 'adminui', 'features_controller.rb')
         require controller_path.to_s if controller_path.exist?
