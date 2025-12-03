@@ -3,7 +3,7 @@
 module Magick
   class Config
     attr_accessor :adapter_registry, :performance_metrics, :audit_log, :versioning, :warn_on_deprecated,
-                  :async_updates, :memory_ttl, :circuit_breaker_threshold, :circuit_breaker_timeout, :redis_url, :redis_namespace, :redis_db, :environment, :active_record_model_class, :enable_admin_ui
+                  :async_updates, :memory_ttl, :circuit_breaker_threshold, :circuit_breaker_timeout, :redis_url, :redis_namespace, :redis_db, :environment, :active_record_model_class
 
     def initialize
       @warn_on_deprecated = false
@@ -14,7 +14,6 @@ module Magick
       @redis_namespace = 'magick:features'
       @redis_db = nil # Use default database (0) unless specified
       @environment = defined?(Rails) ? Rails.env.to_s : 'development'
-      @enable_admin_ui = false # Admin UI disabled by default
     end
 
     # DSL methods for configuration
@@ -161,10 +160,6 @@ module Magick
       @environment = name.to_s
     end
 
-    def admin_ui(enabled: true)
-      @enable_admin_ui = enabled
-    end
-
     def apply!
       # Apply configuration to Magick module
       Magick.adapter_registry = adapter_registry if adapter_registry
@@ -194,13 +189,6 @@ module Magick
       Magick.audit_log = audit_log if audit_log
       Magick.versioning = versioning if versioning
       Magick.warn_on_deprecated = warn_on_deprecated
-
-      # Load optional components if enabled
-      return unless @enable_admin_ui && defined?(Rails)
-
-      # Load Admin UI - routes need to be drawn during initialization, not after
-      # The engine's isolate_namespace should prevent interference with Warden/Devise
-      require_relative '../magick/admin_ui' unless defined?(Magick::AdminUI)
     end
 
     private

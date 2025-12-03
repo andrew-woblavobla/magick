@@ -6,6 +6,7 @@ if defined?(Rails)
   # DSL is already loaded by magick.rb, but ensure it's available
   require 'magick/dsl' unless defined?(Magick::DSL)
   require_relative 'events'
+  # Admin UI engine is now loaded in magick.rb when Rails is detected
 
   module Magick
     module Rails

@@ -111,9 +111,6 @@ Magick.configure do
   audit_log enabled: true
   versioning enabled: true
   warn_on_deprecated enabled: true
-
-  # Enable Admin UI (optional)
-  admin_ui enabled: true
 end
 ```
 
@@ -524,23 +521,17 @@ Magick includes a web-based Admin UI for managing feature flags. It's a Rails En
 
 **Setup:**
 
-1. Enable Admin UI in `config/initializers/magick.rb`:
+1. Configure roles (optional) for targeting management in `config/initializers/magick.rb`:
 
 ```ruby
-Magick.configure do
-  admin_ui enabled: true
+Rails.application.config.after_initialize do
+  Magick::AdminUI.configure do |config|
+    config.available_roles = ['admin', 'user', 'manager', 'guest']
+  end
 end
 ```
 
-2. Configure roles (optional) for targeting management:
-
-```ruby
-Magick::AdminUI.configure do |config|
-  config.available_roles = ['admin', 'user', 'manager', 'guest']
-end
-```
-
-3. Mount the engine in `config/routes.rb`:
+2. Mount the engine in `config/routes.rb`:
 
 ```ruby
 Rails.application.routes.draw do

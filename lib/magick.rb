@@ -35,6 +35,13 @@ require_relative 'magick/config'
 # Always load DSL - it will make itself available when Rails is detected
 require_relative 'magick/dsl'
 
+# Always require Admin UI engine when Rails is detected, so Rails can discover it as a railtie
+# Rails discovers railties during gem loading, not during initialization hooks
+# Users control whether the engine is active by mounting it in their routes file
+if defined?(Rails)
+  require_relative 'magick/admin_ui' unless defined?(Magick::AdminUI)
+end
+
 module Magick
   class << self
     attr_accessor :adapter_registry, :default_adapter, :audit_log, :versioning,
