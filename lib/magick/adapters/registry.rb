@@ -15,6 +15,8 @@ module Magick
         @primary = primary || :memory # :memory, :redis, or :active_record
         @subscriber_thread = nil
         @subscriber = nil
+        @last_reload_times = {} # Track last reload time per feature for debouncing
+        @reload_mutex = Mutex.new
         # Only start Pub/Sub subscriber if Redis is available
         # In memory-only mode, each process has isolated cache (no cross-process invalidation)
         start_cache_invalidation_subscriber if redis_adapter
@@ -187,6 +189,21 @@ module Magick
             on.message do |_channel, feature_name|
               feature_name_str = feature_name.to_s
 
+              # Debounce: only reload if we haven't reloaded this feature in the last 100ms
+              # This prevents duplicate reloads from multiple invalidation messages
+              should_reload = @reload_mutex.synchronize do
+                last_reload = @last_reload_times[feature_name_str]
+                now = Time.now.to_f
+                if last_reload.nil? || (now - last_reload) > 0.1 # 100ms debounce
+                  @last_reload_times[feature_name_str] = now
+                  true
+                else
+                  false
+                end
+              end
+
+              next unless should_reload
+
               # Invalidate memory cache for this feature
               memory_adapter.delete(feature_name_str) if memory_adapter
 
@@ -196,7 +213,7 @@ module Magick
                 feature = Magick.features[feature_name_str]
                 if feature.respond_to?(:reload)
                   feature.reload
-                  # Log for debugging (only in development)
+                  # Log for debugging (only in development, and only once per debounce period)
                   if defined?(Rails) && Rails.env.development?
                     Rails.logger.debug "Magick: Reloaded feature '#{feature_name_str}' after cache invalidation"
                   end

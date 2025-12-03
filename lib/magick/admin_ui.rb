@@ -1,19 +1,8 @@
 # frozen_string_literal: true
 
 require_relative 'admin_ui/engine'
-# Controllers are in app/controllers and will be auto-loaded by Rails engine
-# But we explicitly require them to ensure they're available when needed
-if defined?(Rails) && Rails.env
-  # In Rails, controllers are auto-loaded from app/controllers
-  # But we can explicitly require them if needed for console access
-  engine_root = Magick::AdminUI::Engine.root
-  if engine_root.join('app', 'controllers', 'magick', 'adminui', 'features_controller.rb').exist?
-    require engine_root.join('app', 'controllers', 'magick', 'adminui', 'features_controller').to_s
-  end
-  if engine_root.join('app', 'controllers', 'magick', 'adminui', 'stats_controller.rb').exist?
-    require engine_root.join('app', 'controllers', 'magick', 'adminui', 'stats_controller').to_s
-  end
-end
+# Controllers are explicitly required in the Engine's config.to_prepare block
+# This ensures they're loaded when the gem is used from RubyGems
 require_relative 'admin_ui/helpers'
 
 module Magick

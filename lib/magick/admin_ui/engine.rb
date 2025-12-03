@@ -16,6 +16,11 @@ module Magick
 
       engine_name 'magick_admin_ui'
 
+      # Ensure the engine doesn't interfere with Warden/Devise middleware
+      # Rails engines by default inherit middleware from the main app, which is what we want
+      # We don't add any custom middleware that could interfere with Warden/Devise
+      # The engine should work alongside existing authentication middleware without modification
+
       # Rails engines automatically detect app/views and app/controllers directories
       # With isolate_namespace, views should be at:
       # app/views/magick/adminui/[controller]/[action].html.erb
@@ -25,10 +30,22 @@ module Magick
       # to ensure controllers are found
       config.autoload_paths += %W[#{root}/app/controllers] if root.join('app', 'controllers').exist?
 
+      # Explicitly require controllers early to ensure they're loaded when gem is from RubyGems
+      # This initializer runs before routes are drawn
+      initializer 'magick.admin_ui.require_controllers', before: :load_config_initializers do
+        engine_root = Magick::AdminUI::Engine.root
+        controller_path = engine_root.join('app', 'controllers', 'magick', 'adminui', 'features_controller.rb')
+        require controller_path.to_s if controller_path.exist?
+
+        stats_controller_path = engine_root.join('app', 'controllers', 'magick', 'adminui', 'stats_controller.rb')
+        require stats_controller_path.to_s if stats_controller_path.exist?
+      end
+
       # Explicitly add app/views to view paths
       # Rails engines should do this automatically, but we ensure it's configured
       initializer 'magick.admin_ui.append_view_paths', after: :add_view_paths do |app|
-        app.paths['app/views'] << root.join('app', 'views').to_s if root.join('app', 'views').exist?
+        engine_root = Magick::AdminUI::Engine.root
+        app.paths['app/views'] << engine_root.join('app', 'views').to_s if engine_root.join('app', 'views').exist?
       end
 
       # Also ensure view paths are added when ActionController loads
@@ -39,9 +56,20 @@ module Magick
         end
       end
 
-      # Ensure view paths are added in to_prepare (runs before each request in development)
+      # Ensure controllers are loaded and view paths are added in to_prepare
+      # This runs before each request in development and once at boot in production
       config.to_prepare do
-        view_path = Magick::AdminUI::Engine.root.join('app', 'views').to_s
+        # Explicitly require controllers first to ensure they're loaded
+        # This is necessary when the gem is loaded from RubyGems
+        engine_root = Magick::AdminUI::Engine.root
+        controller_path = engine_root.join('app', 'controllers', 'magick', 'adminui', 'features_controller.rb')
+        require controller_path.to_s if controller_path.exist?
+
+        stats_controller_path = engine_root.join('app', 'controllers', 'magick', 'adminui', 'stats_controller.rb')
+        require stats_controller_path.to_s if stats_controller_path.exist?
+
+        # Then add view paths
+        view_path = engine_root.join('app', 'views').to_s
         if File.directory?(view_path)
           if defined?(Magick::AdminUI::FeaturesController)
             Magick::AdminUI::FeaturesController.append_view_path(view_path)

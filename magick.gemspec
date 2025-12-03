@@ -13,7 +13,7 @@ Gem::Specification.new do |spec|
   spec.homepage      = 'https://github.com/andrew-woblavobla/magick'
   spec.license       = 'MIT'
 
-  spec.files         = Dir['lib/**/*', 'README.md', 'LICENSE']
+  spec.files         = Dir['lib/**/*', 'app/**/*', 'README.md', 'LICENSE']
   spec.require_paths = ['lib']
 
   spec.required_ruby_version = '>= 3.0.0'

@@ -563,6 +563,7 @@ module Magick
 
     def save_targeting
       # Save targeting to adapter (this updates memory synchronously, then Redis/AR)
+      # The set method already publishes cache invalidation to other processes via Pub/Sub
       adapter_registry.set(name, 'targeting', targeting)
 
       # Update the feature in Magick.features if it's registered
@@ -575,14 +576,10 @@ module Magick
       # Update local targeting empty cache for performance
       @_targeting_empty = targeting.empty?
 
-      # Explicitly publish cache invalidation to other processes via Pub/Sub
-      # This ensures other Rails app instances/consoles invalidate their cache and reload
-      # Note: We don't invalidate local cache here because we just updated it above
-      # The set method publishes cache invalidation, but we also publish here to ensure
-      # it happens even if Redis update fails or is async
-      if adapter_registry.respond_to?(:publish_cache_invalidation)
-        adapter_registry.publish_cache_invalidation(name)
-      end
+      # Note: We don't need to explicitly publish cache invalidation here because:
+      # 1. adapter_registry.set already publishes cache invalidation (synchronously for async Redis updates)
+      # 2. Publishing twice causes duplicate reloads in other processes
+      # 3. The set method handles both sync and async Redis updates correctly
     end
 
     private
