@@ -43,16 +43,40 @@ if defined?(::ActiveRecord::Base)
     end
 
     before(:each) do
-      # Ensure table exists before each test by creating adapter
-      described_class.new
+      # Create the table if it doesn't exist (for testing)
+      unless ActiveRecord::Base.connection.table_exists?('magick_features')
+        ActiveRecord::Base.connection.create_table :magick_features do |t|
+          t.string :feature_name, null: false
+          t.text :data
+          t.timestamps
+        end
+        ActiveRecord::Base.connection.add_index :magick_features, :feature_name, unique: true
+      end
+
+      # Ensure MagickFeature model class exists
+      unless defined?(MagickFeature)
+        ar_major = ::ActiveRecord::VERSION::MAJOR
+        ar_minor = ::ActiveRecord::VERSION::MINOR
+        use_json = ar_major >= 8 || (ar_major == 7 && ar_minor >= 1)
+
+        Object.const_set('MagickFeature', Class.new(ActiveRecord::Base) do
+          self.table_name = 'magick_features'
+          if use_json
+            attribute :data, :json, default: {}
+          else
+            serialize :data, Hash
+          end
+        end)
+      end
+
       # Clean up before each test
-      MagickFeature.delete_all if defined?(MagickFeature) && MagickFeature.table_exists?
+      MagickFeature.delete_all if MagickFeature.table_exists?
     end
 
     let(:adapter) { described_class.new }
 
     describe 'initialization' do
-      it 'creates table if it does not exist' do
+      it 'requires table to exist' do
         expect(adapter).to be_a(described_class)
         expect(MagickFeature.table_exists?).to be true
       end
@@ -85,9 +109,26 @@ if defined?(::ActiveRecord::Base)
         expect(adapter.get(:test_feature, 'value')).to be true
       end
 
+      it 'raises error if table does not exist' do
+        # Temporarily drop the table
+        ActiveRecord::Base.connection.drop_table(:magick_features) if ActiveRecord::Base.connection.table_exists?('magick_features')
+
+        expect { described_class.new }.to raise_error(Magick::AdapterError, /Table 'magick_features' does not exist/)
+
+        # Restore table for other tests
+        ActiveRecord::Base.connection.create_table :magick_features do |t|
+          t.string :feature_name, null: false
+          t.text :data
+          t.timestamps
+        end
+        ActiveRecord::Base.connection.add_index :magick_features, :feature_name, unique: true
+      end
+
       it 'raises error if ActiveRecord connection fails' do
-        allow(ActiveRecord::Base).to receive(:connection).and_raise(StandardError.new('Connection failed'))
-        expect { described_class.new }.to raise_error(Magick::AdapterError)
+        # MagickFeature should already exist from before(:each)
+        # Stub table_exists? to raise an error to simulate connection failure
+        allow(MagickFeature).to receive(:table_exists?).and_raise(StandardError.new('Connection failed'))
+        expect { described_class.new }.to raise_error(Magick::AdapterError, /Failed to initialize ActiveRecord adapter/)
       end
     end
 
@@ -436,28 +477,45 @@ if defined?(::ActiveRecord::Base)
       end
 
       before(:each) do
-        # Ensure table exists before thread safety tests
-        # Create adapter instance to trigger table creation
-        adapter_instance = described_class.new
-        # Force table creation if it doesn't exist
-        adapter_instance.send(:ensure_table_exists) unless MagickFeature.table_exists?
+        # Create the table if it doesn't exist (for testing)
+        unless ActiveRecord::Base.connection.table_exists?('magick_features')
+          ActiveRecord::Base.connection.create_table :magick_features do |t|
+            t.string :feature_name, null: false
+            t.text :data
+            t.timestamps
+          end
+          ActiveRecord::Base.connection.add_index :magick_features, :feature_name, unique: true
+        end
+
+        # Ensure MagickFeature model class exists
+        unless defined?(MagickFeature)
+          ar_major = ::ActiveRecord::VERSION::MAJOR
+          ar_minor = ::ActiveRecord::VERSION::MINOR
+          use_json = ar_major >= 8 || (ar_major == 7 && ar_minor >= 1)
+
+          Object.const_set('MagickFeature', Class.new(ActiveRecord::Base) do
+            self.table_name = 'magick_features'
+            if use_json
+              attribute :data, :json, default: {}
+            else
+              serialize :data, Hash
+            end
+          end)
+        end
+
         # Wait a bit to ensure table creation is complete across all connections
         sleep 0.1
         # Verify table exists
         raise "Table magick_features should exist but doesn't" unless MagickFeature.table_exists?
 
         # Clean up any existing data
-        MagickFeature.delete_all if defined?(MagickFeature) && MagickFeature.table_exists?
+        MagickFeature.delete_all if MagickFeature.table_exists?
       end
 
       # Ensure adapter instance also has table ready
       # Use a shared adapter instance for all threads (ActiveRecord handles connection pooling)
       let(:adapter) do
-        @adapter_instance ||= begin
-          instance = described_class.new
-          instance.send(:ensure_table_exists) unless MagickFeature.table_exists?
-          instance
-        end
+        @adapter_instance ||= described_class.new
       end
 
       it 'handles concurrent writes' do
