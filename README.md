@@ -45,17 +45,14 @@ This will create `config/initializers/magick.rb` with a basic configuration.
 
 ### ActiveRecord Adapter (Optional)
 
-If you want to use ActiveRecord as a persistent storage backend, generate the migration:
+If you want to use ActiveRecord as a persistent storage backend, you **must** generate and run the migration:
 
 ```bash
 rails generate magick:active_record
-```
-
-This will create a migration file that creates the `magick_features` table. Then run:
-
-```bash
 rails db:migrate
 ```
+
+This will create a migration file that creates the `magick_features` table. **The adapter will not auto-create the table** - you must run migrations.
 
 **Note:** The ActiveRecord adapter is optional and only needed if you want database-backed feature flags. The gem works perfectly fine with just the memory adapter or Redis adapter.
 
@@ -460,7 +457,7 @@ The ActiveRecord adapter provides database-backed persistent storage for feature
 
 **Setup:**
 
-1. Generate the migration:
+1. **Generate and run the migration** (required):
    ```bash
    rails generate magick:active_record
    rails db:migrate
@@ -469,7 +466,10 @@ The ActiveRecord adapter provides database-backed persistent storage for feature
    **With UUID primary keys:**
    ```bash
    rails generate magick:active_record --uuid
+   rails db:migrate
    ```
+
+   **Important:** The adapter will **not** auto-create the table. You must run migrations before using the ActiveRecord adapter. If the table doesn't exist, the adapter will raise a clear error with instructions.
 
 2. Configure in `config/initializers/magick.rb`:
    ```ruby
@@ -479,8 +479,6 @@ The ActiveRecord adapter provides database-backed persistent storage for feature
      # active_record model_class: YourCustomModel
    end
    ```
-
-The adapter automatically creates the `magick_features` table if it doesn't exist, but using the generator is recommended for production applications.
 
 **PostgreSQL Support:**
 
