@@ -3,18 +3,17 @@
 module Magick
   module Adapters
     class ActiveRecord < Base
-      @table_created_mutex = Mutex.new
-      @table_created = false
-
       def initialize(model_class: nil)
         @model_class = model_class || default_model_class
-        ensure_table_exists
+        # Verify table exists - raise clear error if it doesn't
+        unless @model_class.table_exists?
+          raise AdapterError, "Table 'magick_features' does not exist. Please run: rails generate magick:active_record && rails db:migrate"
+        end
       rescue StandardError => e
         raise AdapterError, "Failed to initialize ActiveRecord adapter: #{e.message}"
       end
 
       def get(feature_name, key)
-        ensure_table_exists unless @model_class.table_exists?
         feature_name_str = feature_name.to_s
         record = @model_class.find_by(feature_name: feature_name_str)
         return nil unless record
@@ -24,16 +23,10 @@ module Magick
         value = data.is_a?(Hash) ? data[key.to_s] : nil
         deserialize_value(value)
       rescue StandardError => e
-        # If table doesn't exist, try to create it and retry once
-        if e.message.include?('no such table') || e.message.include?("doesn't exist")
-          ensure_table_exists
-          retry
-        end
         raise AdapterError, "Failed to get from ActiveRecord: #{e.message}"
       end
 
       def set(feature_name, key, value)
-        ensure_table_exists unless @model_class.table_exists?
         feature_name_str = feature_name.to_s
         retries = 5
         begin
@@ -48,54 +41,31 @@ module Magick
           record.save!
         rescue ::ActiveRecord::StatementInvalid, ::ActiveRecord::ConnectionTimeoutError => e
           # SQLite busy/locked errors - retry with exponential backoff
-          if (e.message.include?('database is locked') || e.message.include?('busy') || e.message.include?('timeout') || e.message.include?('no such table')) && retries > 0
+          if (e.message.include?('database is locked') || e.message.include?('busy') || e.message.include?('timeout')) && retries > 0
             retries -= 1
-            # If it's a "no such table" error, ensure table exists
-            if e.message.include?('no such table')
-              ensure_table_exists
-            end
             sleep(0.01 * (6 - retries)) # Exponential backoff: 0.01, 0.02, 0.03, 0.04, 0.05
             retry
           end
           raise AdapterError, "Failed to set in ActiveRecord: #{e.message}"
         rescue StandardError => e
-          # If table doesn't exist, try to create it and retry once
-          if (e.message.include?('no such table') || e.message.include?("doesn't exist")) && retries > 0
-            retries -= 1
-            ensure_table_exists
-            sleep(0.01)
-            retry
-          end
           raise AdapterError, "Failed to set in ActiveRecord: #{e.message}"
         end
       end
 
       def delete(feature_name)
-        ensure_table_exists unless @model_class.table_exists?
         feature_name_str = feature_name.to_s
         retries = 5
         begin
           @model_class.where(feature_name: feature_name_str).destroy_all
         rescue ::ActiveRecord::StatementInvalid, ::ActiveRecord::ConnectionTimeoutError => e
           # SQLite busy/locked errors - retry with exponential backoff
-          if (e.message.include?('database is locked') || e.message.include?('busy') || e.message.include?('timeout') || e.message.include?('no such table')) && retries > 0
+          if (e.message.include?('database is locked') || e.message.include?('busy') || e.message.include?('timeout')) && retries > 0
             retries -= 1
-            # If it's a "no such table" error, ensure table exists
-            if e.message.include?('no such table')
-              ensure_table_exists
-            end
             sleep(0.01 * (6 - retries)) # Exponential backoff: 0.01, 0.02, 0.03, 0.04, 0.05
             retry
           end
           raise AdapterError, "Failed to delete from ActiveRecord: #{e.message}"
         rescue StandardError => e
-          # If table doesn't exist, try to create it and retry once
-          if (e.message.include?('no such table') || e.message.include?("doesn't exist")) && retries > 0
-            retries -= 1
-            ensure_table_exists
-            sleep(0.01)
-            retry
-          end
           raise AdapterError, "Failed to delete from ActiveRecord: #{e.message}"
         end
       end
@@ -146,66 +116,6 @@ module Magick
             connection.table_exists?(table_name)
           end
         end)
-      end
-
-      def ensure_table_exists
-        return if @model_class.table_exists?
-
-        # Use a non-blocking mutex to prevent deadlocks
-        mutex = self.class.instance_variable_get(:@table_created_mutex)
-        if mutex.try_lock
-          begin
-            # Double-check after acquiring lock
-            return if @model_class.table_exists?
-
-            create_table
-            self.class.instance_variable_set(:@table_created, true)
-          ensure
-            mutex.unlock
-          end
-        else
-          # Another thread is creating the table, wait for it to complete
-          # Use a longer timeout with exponential backoff to avoid hanging
-          20.times do |i|
-            sleep(0.01 * (i + 1)) # Exponential backoff: 0.01, 0.02, 0.03, ...
-            return if @model_class.table_exists?
-          end
-          # If we still don't have the table, try one more time
-          unless @model_class.table_exists?
-            # Last attempt: try to acquire lock and create
-            if mutex.try_lock
-              begin
-                return if @model_class.table_exists?
-                create_table
-                self.class.instance_variable_set(:@table_created, true)
-              ensure
-                mutex.unlock
-              end
-            end
-          end
-        end
-      rescue StandardError => e
-        # Don't raise if table exists now (might have been created by another thread)
-        return if @model_class.table_exists?
-        raise e
-      end
-
-      def create_table
-        connection = @model_class.connection
-        return if connection.table_exists?('magick_features')
-
-        connection.create_table :magick_features do |t|
-          t.string :feature_name, null: false, index: { unique: true }
-          t.text :data
-          t.timestamps
-        end
-      rescue StandardError => e
-        # Table might already exist or migration might be needed
-        # Check if table exists now (might have been created by another thread)
-        return if connection.table_exists?('magick_features')
-
-        warn "Magick: Could not create magick_features table: #{e.message}" if defined?(Rails) && Rails.env.development?
-        raise e if defined?(Rails) && Rails.env.test?
       end
 
       def serialize_value(value)
