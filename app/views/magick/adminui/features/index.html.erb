@@ -6,6 +6,26 @@
     </div>
   </div>
 
+  <!-- Filtering UI -->
+  <div style="padding: 16px; border-bottom: 1px solid #e0e0e0; background: #f9f9f9;">
+    <%= form_with url: magick_admin_ui.features_path, method: :get, local: true, style: "display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;" do |f| %>
+      <div style="flex: 1; min-width: 200px;">
+        <label for="search" style="display: block; margin-bottom: 4px; font-weight: 500;">Search</label>
+        <%= text_field_tag :search, params[:search], placeholder: "Search by name or description...", class: 'form-control', style: "width: 100%;" %>
+      </div>
+      <div style="flex: 0 0 180px;">
+        <label for="group" style="display: block; margin-bottom: 4px; font-weight: 500;">Group</label>
+        <%= select_tag :group, options_for_select([['All Groups', '']] + @available_groups.map { |g| [g, g] }, params[:group]), class: 'form-control', style: "width: 100%;" %>
+      </div>
+      <div style="flex: 0 0 auto;">
+        <%= submit_tag 'Filter', class: 'btn btn-primary btn-sm', style: "height: 38px;" %>
+        <% if params[:search].present? || params[:group].present? %>
+          <%= link_to 'Clear', magick_admin_ui.features_path, class: 'btn btn-secondary btn-sm', style: "height: 38px;" %>
+        <% end %>
+      </div>
+    <% end %>
+  </div>
+
   <% if @features.empty? %>
     <div class="empty-state">
       <h3>No features found</h3>
@@ -16,6 +36,7 @@
       <thead>
         <tr>
           <th>Name</th>
+          <th>Group</th>
           <th>Type</th>
           <th>Status</th>
           <th>Value</th>
@@ -30,6 +51,13 @@
               <strong><%= feature.display_name || feature.name %></strong>
               <br>
               <small style="color: #999;"><%= feature.name %></small>
+            </td>
+            <td data-label="Group">
+              <% if feature.group.present? %>
+                <span class="badge badge-info"><%= feature.group %></span>
+              <% else %>
+                <em style="color: #999;">—</em>
+              <% end %>
             </td>
             <td data-label="Type">
               <span class="badge badge-info">

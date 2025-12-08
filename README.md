@@ -134,7 +134,8 @@ end
 Magick.register_feature(:new_dashboard,
   type: :boolean,
   default_value: false,
-  description: "New dashboard UI"
+  description: "New dashboard UI",
+  group: "UI"  # Optional: group features for organization
 )
 
 # Register a string feature
@@ -564,6 +565,33 @@ Once mounted, visit `/magick` in your browser to access the Admin UI.
   - **Visual Display**: See all active targeting rules with badges
 - **Edit Features**: Update feature values (boolean, string, number) directly from the UI
 - **Statistics**: View performance metrics and usage statistics for each feature
+- **Feature Grouping**: Organize features into groups for easier management and filtering
+- **Filtering**: Filter features by group, name, or description
+
+**Feature Grouping:**
+
+Features can be organized into groups for easier management and filtering:
+
+1. **Setting Groups**:
+   - Set a group when registering a feature in code:
+     ```ruby
+     Magick.register_feature(:new_payment_flow,
+       type: :boolean,
+       default_value: false,
+       group: 'Payment',
+       description: "New payment processing flow"
+     )
+     ```
+   - Or set/update groups via the Admin UI when editing a feature
+
+2. **Filtering by Group**:
+   - Use the group dropdown in the Admin UI to filter features by group
+   - Combine group filtering with search to find specific features quickly
+
+3. **Benefits**:
+   - Organize features by functional area (e.g., "Authentication", "Payment", "UI")
+   - Quickly find related features
+   - Better organization for large feature flag sets
 
 **Targeting Management:**
 

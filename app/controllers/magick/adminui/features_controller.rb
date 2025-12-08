@@ -26,6 +26,24 @@ module Magick
 
       def index
         @features = Magick.features.values
+
+        # Filter by group if provided
+        if params[:group].present?
+          @features = @features.select { |f| f.group == params[:group] }
+        end
+
+        # Filter by search query (name or description)
+        if params[:search].present?
+          search_term = params[:search].downcase
+          @features = @features.select do |f|
+            f.name.downcase.include?(search_term) ||
+            (f.display_name && f.display_name.downcase.include?(search_term)) ||
+            (f.description && f.description.downcase.include?(search_term))
+          end
+        end
+
+        # Get all available groups for filter dropdown
+        @available_groups = Magick.features.values.map(&:group).compact.uniq.sort
       end
 
       def show
@@ -35,6 +53,11 @@ module Magick
       end
 
       def update
+        # Update group if provided
+        if params.key?(:group)
+          @feature.set_group(params[:group])
+        end
+
         if @feature.type == :boolean
           # For boolean features, checkbox sends 'true' when checked, nothing when unchecked
           # Rails form helpers handle this - if checkbox is unchecked, params[:value] will be nil

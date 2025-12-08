@@ -18,6 +18,14 @@
         <span class="badge badge-info"><%= @feature.type.to_s.capitalize %></span>
       </div>
     </div>
+    <% if @feature.group.present? %>
+      <div class="detail-item">
+        <div class="detail-label">Group</div>
+        <div class="detail-value">
+          <span class="badge badge-info"><%= @feature.group %></span>
+        </div>
+      </div>
+    <% end %>
     <div class="detail-item">
       <div class="detail-label">Status</div>
       <div class="detail-value">

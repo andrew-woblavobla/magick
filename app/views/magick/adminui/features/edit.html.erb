@@ -19,6 +19,12 @@
     </div>
 
     <div class="form-group">
+      <label>Group</label>
+      <%= text_field_tag 'group', @feature.group, placeholder: 'e.g., Authentication, Payment, UI', class: 'form-control' %>
+      <small style="color: #999;">Optional: Group features together for easier organization and filtering</small>
+    </div>
+
+    <div class="form-group">
       <label>Current Value</label>
       <% if @feature.type == :boolean %>
         <div>

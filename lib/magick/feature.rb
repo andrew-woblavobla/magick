@@ -8,7 +8,7 @@ module Magick
     VALID_TYPES = %i[boolean string number].freeze
     VALID_STATUSES = %i[active inactive deprecated].freeze
 
-    attr_reader :name, :type, :status, :default_value, :description, :display_name, :adapter_registry
+    attr_reader :name, :type, :status, :default_value, :description, :display_name, :group, :adapter_registry
 
     def initialize(name, adapter_registry, **options)
       @name = name.to_s
@@ -18,6 +18,7 @@ module Magick
       @default_value = options.fetch(:default_value, default_for_type)
       @description = options[:description]
       @display_name = options[:name] || options[:display_name]
+      @group = options[:group]
       @targeting = {}
       @dependencies = options[:dependencies] ? Array(options[:dependencies]) : []
       @stored_value_initialized = false # Track if @stored_value has been explicitly set
@@ -405,6 +406,7 @@ module Magick
       adapter_registry.set(name, 'default_value', default_value)
       adapter_registry.set(name, 'description', description) if description
       adapter_registry.set(name, 'display_name', display_name) if display_name
+      adapter_registry.set(name, 'group', group) if group
       @stored_value = value
       @stored_value_initialized = true # Mark as initialized
 
@@ -516,6 +518,24 @@ module Magick
       true
     end
 
+    def set_group(group_name)
+      if group_name.nil? || group_name.to_s.strip.empty?
+        @group = nil
+        # Clear group from adapter by setting to empty string (adapters handle this)
+        adapter_registry.set(name, 'group', nil)
+      else
+        @group = group_name.to_s.strip
+        adapter_registry.set(name, 'group', @group)
+      end
+
+      # Update registered feature instance if it exists
+      if Magick.features.key?(name)
+        Magick.features[name].instance_variable_set(:@group, @group)
+      end
+
+      true
+    end
+
     def delete
       adapter_registry.delete(name)
       @stored_value = nil
@@ -541,6 +561,7 @@ module Magick
         registered.instance_variable_set(:@status, @status)
         registered.instance_variable_set(:@description, @description)
         registered.instance_variable_set(:@display_name, @display_name)
+        registered.instance_variable_set(:@group, @group)
         registered.instance_variable_set(:@targeting, @targeting.dup)
         registered.instance_variable_set(:@_targeting_empty, @_targeting_empty)
         registered.instance_variable_set(:@_perf_metrics_enabled, @_perf_metrics_enabled)
@@ -619,6 +640,10 @@ module Magick
         @display_name = display_name_value if display_name_value
       end
 
+      # Load group from adapter (can be set via DSL or Admin UI)
+      group_value = adapter_registry.get(name, 'group')
+      @group = group_value if group_value
+
       targeting_value = adapter_registry.get(name, 'targeting')
       if targeting_value.is_a?(Hash)
         # Normalize keys to symbols and handle nested structures
@@ -636,9 +661,8 @@ module Magick
       # The features.rb file is the source of truth for metadata
       # This ensures metadata is always up-to-date even if feature already exists
       adapter_registry.set(name, 'description', @description) if @description
-      return unless @display_name
-
-      adapter_registry.set(name, 'display_name', @display_name)
+      adapter_registry.set(name, 'display_name', @display_name) if @display_name
+      adapter_registry.set(name, 'group', @group) if @group
     end
 
     def load_value_from_adapter
