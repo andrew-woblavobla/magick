@@ -26,5 +26,5 @@ Gem::Specification.new do |spec|
   spec.add_development_dependency 'rubocop-rspec', '~> 2.22'
   # Optional dependencies for ActiveRecord adapter testing
   spec.add_development_dependency 'activerecord', '>= 6.0', '< 9.0'
-  spec.add_development_dependency 'sqlite3', '~> 1.6'
+  spec.add_development_dependency 'sqlite3', '~> 2.0'
 end
