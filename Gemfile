@@ -14,5 +14,5 @@ group :development, :test do
   gem 'rubocop-rspec', '~> 2.22'
   # Optional dependencies for ActiveRecord adapter testing
   gem 'activerecord', '>= 6.0', '< 9.0', require: false
-  gem 'sqlite3', '~> 1.6', require: false
+  gem 'sqlite3', '~> 2.0', require: false
 end
