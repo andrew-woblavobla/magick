@@ -16,7 +16,7 @@ Gem::Specification.new do |spec|
   spec.files         = Dir['lib/**/*', 'app/**/*', 'config/**/*', 'README.md', 'LICENSE']
   spec.require_paths = ['lib']
 
-  spec.required_ruby_version = '>= 3.0.0'
+  spec.required_ruby_version = '>= 3.2.0'
 
   # Redis is optional - gem works without it using memory-only adapter
   # spec.add_dependency 'redis', '~> 5.0'
