@@ -10,7 +10,7 @@ gem 'rake', '~> 13.0'
 
 group :development, :test do
   gem 'rspec', '~> 3.12'
-  gem 'rubocop', '~> 1.50'
+  gem 'rubocop', '~> 1.82'
   gem 'rubocop-rspec', '~> 3.8'
   # Optional dependencies for ActiveRecord adapter testing
   gem 'activerecord', '>= 6.0', '< 9.0', require: false
