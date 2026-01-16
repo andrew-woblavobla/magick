@@ -332,6 +332,100 @@
       box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.1);
     }
 
+    /* Tags Search Interface */
+    .tags-search-container {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .tags-search-input {
+      flex: 1;
+      padding: 10px 12px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      font-size: 14px;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .tags-search-input:focus {
+      outline: none;
+      border-color: #3498db;
+      box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.1);
+    }
+    .tags-count {
+      font-size: 13px;
+      color: #666;
+      white-space: nowrap;
+    }
+    .tags-checkbox-container {
+      max-height: 300px;
+      overflow-y: auto;
+      border: 1px solid #e0e0e0;
+      border-radius: 4px;
+      padding: 12px;
+      background: #fafafa;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .tags-checkbox-container::-webkit-scrollbar {
+      width: 8px;
+    }
+    .tags-checkbox-container::-webkit-scrollbar-track {
+      background: #f1f1f1;
+      border-radius: 4px;
+    }
+    .tags-checkbox-container::-webkit-scrollbar-thumb {
+      background: #ccc;
+      border-radius: 4px;
+    }
+    .tags-checkbox-container::-webkit-scrollbar-thumb:hover {
+      background: #999;
+    }
+    .tag-checkbox-label {
+      display: inline-flex;
+      align-items: center;
+      cursor: pointer;
+      padding: 6px 8px;
+      border-radius: 4px;
+      transition: background-color 0.2s;
+    }
+    .tag-checkbox-label:hover {
+      background-color: #f0f0f0;
+    }
+    .tag-checkbox-label.hidden {
+      display: none;
+    }
+    .tag-checkbox {
+      margin-right: 8px;
+      cursor: pointer;
+    }
+    .tag-checkbox-text {
+      font-size: 14px;
+      color: #333;
+      user-select: none;
+    }
+    .tag-checkbox:checked + .tag-checkbox-text {
+      font-weight: 500;
+      color: #1976d2;
+    }
+    .tag-checkbox:checked ~ .tag-checkbox-text {
+      font-weight: 500;
+      color: #1976d2;
+    }
+    /* Highlight checked labels */
+    .tag-checkbox-label:has(.tag-checkbox:checked) {
+      background-color: #e3f2fd;
+    }
+    /* Fallback for browsers without :has() support */
+    .tag-checkbox-label.checked {
+      background-color: #e3f2fd;
+    }
+    .tag-checkbox-label.checked .tag-checkbox-text {
+      font-weight: 500;
+      color: #1976d2;
+    }
+
     /* Mobile Responsive */
     @media (max-width: 768px) {
       .container {
@@ -418,6 +512,17 @@
       .user-ids-input {
         min-width: 100px;
         font-size: 16px; /* Prevents zoom on iOS */
+      }
+      .tags-search-container {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .tags-count {
+        text-align: right;
+        margin-top: 4px;
+      }
+      .tags-checkbox-container {
+        max-height: 200px;
       }
     }
 
@@ -526,6 +631,176 @@
           this.parentElement.remove();
           updateHiddenInput();
         });
+      });
+    })();
+
+    // Tags Search Filter
+    (function() {
+      const searchInput = document.getElementById('tags_search');
+      const checkboxContainer = document.getElementById('tags_checkbox_container');
+      const visibleCount = document.getElementById('tags_visible_count');
+      const totalCount = document.getElementById('tags_total_count');
+
+      if (!searchInput || !checkboxContainer || !visibleCount || !totalCount) return;
+
+      function filterTags() {
+        const searchTerm = searchInput.value.toLowerCase().trim();
+        const labels = Array.from(checkboxContainer.querySelectorAll('.tag-checkbox-label'));
+        let visibleLabels = [];
+        let hiddenLabels = [];
+
+        labels.forEach(label => {
+          const tagName = label.getAttribute('data-tag-name') || '';
+          const tagId = label.getAttribute('data-tag-id') || '';
+          const tagText = label.querySelector('.tag-checkbox-text')?.textContent.toLowerCase() || '';
+          const checkbox = label.querySelector('.tag-checkbox');
+          const isChecked = checkbox && checkbox.checked;
+
+          // Match against tag name, id, or display text
+          const matches = !searchTerm ||
+                         tagName.includes(searchTerm) ||
+                         tagId.includes(searchTerm) ||
+                         tagText.includes(searchTerm);
+
+          if (matches) {
+            label.classList.remove('hidden');
+            visibleLabels.push({ label: label, checked: isChecked });
+          } else {
+            label.classList.add('hidden');
+            hiddenLabels.push(label);
+          }
+        });
+
+        // Sort visible labels: checked first, then unchecked
+        visibleLabels.sort((a, b) => {
+          if (a.checked && !b.checked) return -1;
+          if (!a.checked && b.checked) return 1;
+          return 0;
+        });
+
+        // Reorder DOM: checked items first, then unchecked, then hidden
+        visibleLabels.forEach(({ label }) => {
+          checkboxContainer.appendChild(label);
+        });
+        hiddenLabels.forEach(label => {
+          checkboxContainer.appendChild(label);
+        });
+
+        visibleCount.textContent = visibleLabels.length;
+      }
+
+      // Filter on input
+      searchInput.addEventListener('input', filterTags);
+
+      // Clear search on Escape key
+      searchInput.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') {
+          searchInput.value = '';
+          filterTags();
+          searchInput.blur();
+        }
+      });
+
+      // Update checked state classes and reorder on change
+      checkboxContainer.querySelectorAll('.tag-checkbox').forEach(checkbox => {
+        function updateCheckedClass() {
+          const label = checkbox.closest('.tag-checkbox-label');
+          if (checkbox.checked) {
+            label.classList.add('checked');
+            label.setAttribute('data-checked', 'true');
+          } else {
+            label.classList.remove('checked');
+            label.setAttribute('data-checked', 'false');
+          }
+          // Reorder after change to keep checked items on top
+          filterTags();
+        }
+        checkbox.addEventListener('change', updateCheckedClass);
+        updateCheckedClass(); // Initial state
+      });
+    })();
+
+    // Roles Search Filter
+    (function() {
+      const searchInput = document.getElementById('roles_search');
+      const checkboxContainer = document.getElementById('roles_checkbox_container');
+      const visibleCount = document.getElementById('roles_visible_count');
+      const totalCount = document.getElementById('roles_total_count');
+
+      if (!searchInput || !checkboxContainer || !visibleCount || !totalCount) return;
+
+      function filterRoles() {
+        const searchTerm = searchInput.value.toLowerCase().trim();
+        const labels = Array.from(checkboxContainer.querySelectorAll('.tag-checkbox-label'));
+        let visibleLabels = [];
+        let hiddenLabels = [];
+
+        labels.forEach(label => {
+          const roleName = label.getAttribute('data-role-name') || '';
+          const roleText = label.querySelector('.tag-checkbox-text')?.textContent.toLowerCase() || '';
+          const checkbox = label.querySelector('.tag-checkbox');
+          const isChecked = checkbox && checkbox.checked;
+
+          // Match against role name or display text
+          const matches = !searchTerm ||
+                         roleName.includes(searchTerm) ||
+                         roleText.includes(searchTerm);
+
+          if (matches) {
+            label.classList.remove('hidden');
+            visibleLabels.push({ label: label, checked: isChecked });
+          } else {
+            label.classList.add('hidden');
+            hiddenLabels.push(label);
+          }
+        });
+
+        // Sort visible labels: checked first, then unchecked
+        visibleLabels.sort((a, b) => {
+          if (a.checked && !b.checked) return -1;
+          if (!a.checked && b.checked) return 1;
+          return 0;
+        });
+
+        // Reorder DOM: checked items first, then unchecked, then hidden
+        visibleLabels.forEach(({ label }) => {
+          checkboxContainer.appendChild(label);
+        });
+        hiddenLabels.forEach(label => {
+          checkboxContainer.appendChild(label);
+        });
+
+        visibleCount.textContent = visibleLabels.length;
+      }
+
+      // Filter on input
+      searchInput.addEventListener('input', filterRoles);
+
+      // Clear search on Escape key
+      searchInput.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') {
+          searchInput.value = '';
+          filterRoles();
+          searchInput.blur();
+        }
+      });
+
+      // Update checked state classes and reorder on change
+      checkboxContainer.querySelectorAll('.tag-checkbox').forEach(checkbox => {
+        function updateCheckedClass() {
+          const label = checkbox.closest('.tag-checkbox-label');
+          if (checkbox.checked) {
+            label.classList.add('checked');
+            label.setAttribute('data-checked', 'true');
+          } else {
+            label.classList.remove('checked');
+            label.setAttribute('data-checked', 'false');
+          }
+          // Reorder after change to keep checked items on top
+          filterRoles();
+        }
+        checkbox.addEventListener('change', updateCheckedClass);
+        updateCheckedClass(); // Initial state
       });
     })();
   </script>

@@ -89,6 +89,18 @@ module Magick
     end
 
     def check_enabled(context = {})
+      # Extract context from user object if provided
+      # This allows Magick.enabled?(:feature, user: player) to work
+      if context[:user]
+        extracted = extract_context_from_object(context[:user])
+        # Merge extracted context, but don't override explicit values already in context
+        extracted.each do |key, value|
+          context[key] = value unless context.key?(key)
+        end
+        # Remove :user key after extraction to avoid confusion
+        context.delete(:user)
+      end
+
       # Fast path: check status first
       return false if status == :inactive
       return false if status == :deprecated && !context[:allow_deprecated]
@@ -111,17 +123,14 @@ module Magick
 
         # Check user/group/role/percentage targeting
         targeting_result = check_targeting(context)
-        if targeting_result.nil?
-          # Targeting doesn't match - return false
-          return false
-        else
-          # Targeting matches - for boolean features, return true directly
-          # For string/number features, still check the value
-          if type == :boolean
-            return true
-          end
-          # For string/number, continue to check value below
-        end
+        return false if targeting_result.nil?
+        # Targeting doesn't match - return false
+
+        # Targeting matches - for boolean features, return true directly
+        # For string/number features, still check the value
+        return true if type == :boolean
+        # For string/number, continue to check value below
+
       end
 
       # Get value and check based on type
@@ -170,23 +179,22 @@ module Magick
         # If targeting doesn't match (returns nil), continue to return default value
         unless targeting_result.nil?
           # Targeting matches - return stored value (or load it if not initialized)
-          if @stored_value_initialized
-            return @stored_value
+          return @stored_value if @stored_value_initialized
+
+          # Load from adapter
+          loaded_value = load_value_from_adapter
+          if loaded_value.nil?
+            # Value not found in adapter, use default and cache it
+            @stored_value = default_value
+            @stored_value_initialized = true
+            return default_value
           else
-            # Load from adapter
-            loaded_value = load_value_from_adapter
-            if loaded_value.nil?
-              # Value not found in adapter, use default and cache it
-              @stored_value = default_value
-              @stored_value_initialized = true
-              return default_value
-            else
-              # Value found in adapter, use it and mark as initialized
-              @stored_value = loaded_value
-              @stored_value_initialized = true
-              return loaded_value
-            end
+            # Value found in adapter, use it and mark as initialized
+            @stored_value = loaded_value
+            @stored_value_initialized = true
+            return loaded_value
           end
+
         end
         # Targeting doesn't match - return default value
         return default_value
@@ -241,6 +249,16 @@ module Magick
 
     def disable_for_role(role_name)
       disable_targeting(:role, role_name)
+      true
+    end
+
+    def enable_for_tag(tag_name)
+      enable_targeting(:tag, tag_name)
+      true
+    end
+
+    def disable_for_tag(tag_name)
+      disable_targeting(:tag, tag_name)
       true
     end
 
@@ -529,9 +547,7 @@ module Magick
       end
 
       # Update registered feature instance if it exists
-      if Magick.features.key?(name)
-        Magick.features[name].instance_variable_set(:@group, @group)
-      end
+      Magick.features[name].instance_variable_set(:@group, @group) if Magick.features.key?(name)
 
       true
     end
@@ -597,7 +613,7 @@ module Magick
       # Update local targeting empty cache for performance
       @_targeting_empty = targeting.empty?
 
-      # Note: We don't need to explicitly publish cache invalidation here because:
+      # NOTE: We don't need to explicitly publish cache invalidation here because:
       # 1. adapter_registry.set already publishes cache invalidation (synchronously for async Redis updates)
       # 2. Publishing twice causes duplicate reloads in other processes
       # 3. The set method handles both sync and async Redis updates correctly
@@ -703,6 +719,14 @@ module Magick
       if context[:role] && target[:role]
         role_list = target[:role].is_a?(Array) ? target[:role] : [target[:role]]
         return true if role_list.include?(context[:role].to_s)
+      end
+
+      # Check tag targeting
+      if context[:tags] && target[:tag]
+        context_tags = Array(context[:tags]).map(&:to_s)
+        target_tags = target[:tag].is_a?(Array) ? target[:tag].map(&:to_s) : [target[:tag].to_s]
+        # Return true if any context tag matches any target tag
+        return true if (context_tags & target_tags).any?
       end
 
       # Check percentage of users (consistent based on user_id)
@@ -830,10 +854,13 @@ module Magick
         context[:group] = object[:group] || object['group']
         context[:role] = object[:role] || object['role']
         context[:ip_address] = object[:ip_address] || object['ip_address']
+        # Extract tags from hash
+        tags = object[:tags] || object['tags'] || object[:tag_ids] || object['tag_ids'] || object[:tag_names] || object['tag_names']
+        context[:tags] = Array(tags).map(&:to_s) if tags
         # Include all other attributes for custom attribute matching
         object.each do |key, value|
-          next if %i[user_id id group role ip_address].include?(key.to_sym)
-          next if %w[user_id id group role ip_address].include?(key.to_s)
+          next if %i[user_id id group role ip_address tags tag_ids tag_names].include?(key.to_sym)
+          next if %w[user_id id group role ip_address tags tag_ids tag_names].include?(key.to_s)
 
           context[key.to_sym] = value
         end
@@ -844,10 +871,32 @@ module Magick
         context[:role] = object.role if object.respond_to?(:role)
         context[:ip_address] = object.ip_address if object.respond_to?(:ip_address)
 
+        # Extract tags from object - try multiple common patterns
+        tags = nil
+        if object.respond_to?(:tags)
+          tags = object.tags
+          # Handle ActiveRecord associations - convert to array if needed
+          tags = tags.to_a if tags.respond_to?(:to_a) && !tags.is_a?(Array)
+        elsif object.respond_to?(:tag_ids)
+          tags = object.tag_ids
+        elsif object.respond_to?(:tag_names)
+          tags = object.tag_names
+        end
+
+        # Normalize tags to array of strings
+        if tags
+          context[:tags] = if tags.respond_to?(:map) && tags.respond_to?(:each)
+                             # ActiveRecord association or array
+                             tags.map { |tag| tag.respond_to?(:id) ? tag.id.to_s : tag.to_s }
+                           else
+                             Array(tags).map(&:to_s)
+                           end
+        end
+
         # For ActiveRecord objects, include all attributes
         if object.respond_to?(:attributes)
           object.attributes.each do |key, value|
-            next if %w[id user_id group role ip_address].include?(key.to_s)
+            next if %w[id user_id group role ip_address tags tag_ids tag_names].include?(key.to_s)
 
             context[key.to_sym] = value
           end

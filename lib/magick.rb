@@ -90,7 +90,7 @@ module Magick
 
       if block.arity.zero?
         # New DSL style - calls apply! automatically
-        ConfigDSL.configure(&block)
+        Magick::ConfigDSL.configure(&block)
       else
         # Old style - need to manually reapply Redis tracking after configuration
         yield self

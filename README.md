@@ -5,7 +5,7 @@ A performant and memory-efficient feature toggle gem for Ruby and Rails applicat
 ## Features
 
 - **Multiple Feature Types**: Boolean, string, and number feature flags
-- **Flexible Targeting**: Enable features for specific users, groups, roles, or percentages
+- **Flexible Targeting**: Enable features for specific users, groups, roles, tags, or percentages
 - **Dual Backend**: Memory adapter (fast) with Redis fallback (persistent)
 - **Rails Integration**: Seamless integration with Rails, including request store caching
 - **DSL Support**: Define features in a Ruby DSL file (`config/features.rb`)
@@ -173,6 +173,10 @@ feature.enable_for_group("beta_testers")
 # Enable for specific role
 feature.enable_for_role("admin")
 
+# Enable for specific tag
+feature.enable_for_tag("premium")
+feature.enable_for_tag("beta")
+
 # Enable for percentage of users (consistent)
 feature.enable_percentage_of_users(25) # 25% of users
 
@@ -215,12 +219,28 @@ end
 Magick.enabled_for?(:feature, user)           # ActiveRecord object
 Magick.enabled_for?(:feature, { id: 123, role: 'admin' })  # Hash
 Magick.enabled_for?(:feature, 123)            # Simple ID
+
+# Tag targeting - tags are automatically extracted from user objects
+user = User.find(123)  # User has tags association
+feature.enable_for_tag('premium')
+Magick.enabled_for?(:feature, user)  # Checks user.tags automatically
+
+# Or explicitly pass tags
+Magick.enabled?(:feature, tags: user.tags.map(&:id))
+Magick.enabled?(:feature, tags: ['premium', 'beta'])
+
+# Tags are extracted from:
+# - user.tags (ActiveRecord association)
+# - user.tag_ids (array of IDs)
+# - user.tag_names (array of names)
+# - hash[:tags], hash[:tag_ids], hash[:tag_names]
 ```
 
 The `enabled_for?` method automatically extracts:
 - `user_id` from `id` or `user_id` attribute
 - `group` from `group` attribute
 - `role` from `role` attribute
+- `tags` from `tags` association, `tag_ids`, or `tag_names` methods/attributes
 - `ip_address` from `ip_address` attribute
 - All other attributes for custom attribute matching
 
@@ -234,6 +254,8 @@ result = feature.enable                    # => true
 result = feature.disable                   # => true
 result = feature.enable_for_user(123)      # => true
 result = feature.enable_for_group('beta')  # => true
+result = feature.enable_for_role('admin')  # => true
+result = feature.enable_for_tag('premium') # => true
 result = feature.enable_percentage_of_users(25)  # => true
 result = feature.set_value(true)          # => true
 ```
@@ -520,12 +542,16 @@ Magick includes a web-based Admin UI for managing feature flags. It's a Rails En
 
 **Setup:**
 
-1. Configure roles (optional) for targeting management in `config/initializers/magick.rb`:
+1. Configure roles and tags (optional) for targeting management in `config/initializers/magick.rb`:
 
 ```ruby
 Rails.application.config.after_initialize do
   Magick::AdminUI.configure do |config|
     config.available_roles = ['admin', 'user', 'manager', 'guest']
+    # Tags can be configured as an array or lambda (for dynamic loading)
+    config.available_tags = -> { Tag.all }  # Lambda loads tags dynamically
+    # Or as a static array:
+    # config.available_tags = ['premium', 'beta', 'vip']
   end
 end
 ```
@@ -561,6 +587,7 @@ Once mounted, visit `/magick` in your browser to access the Admin UI.
 - **Enable/Disable**: Quickly enable or disable features globally
 - **Targeting Management**: Configure targeting rules through a user-friendly interface:
   - **Role Targeting**: Select roles from a configured list (checkboxes)
+  - **Tag Targeting**: Select tags from a dynamically loaded list (checkboxes)
   - **User Targeting**: Enter user IDs (comma-separated)
   - **Visual Display**: See all active targeting rules with badges
 - **Edit Features**: Update feature values (boolean, string, number) directly from the UI
@@ -602,14 +629,21 @@ The Admin UI provides a comprehensive targeting interface:
    - Select multiple roles using checkboxes
    - Roles are automatically added/removed when checkboxes are toggled
 
-2. **User Targeting**:
+2. **Tag Targeting**:
+   - Configure available tags via `Magick::AdminUI.configure` (supports lambda for dynamic loading)
+   - Tags are loaded dynamically each time the page loads (if using lambda)
+   - Select multiple tags using checkboxes
+   - Tags are automatically added/removed when checkboxes are toggled
+   - Tags can be ActiveRecord objects (IDs are stored) or simple strings
+
+3. **User Targeting**:
    - Enter user IDs as comma-separated values (e.g., `123, 456, 789`)
    - Add or remove users dynamically
    - Clear all user targeting by leaving the field empty
 
-3. **Visual Feedback**:
+4. **Visual Feedback**:
    - All targeting rules are displayed as badges in the feature details view
-   - Easy to see which roles/users have access to each feature
+   - Easy to see which roles/tags/users have access to each feature
 
 **Routes:**
 

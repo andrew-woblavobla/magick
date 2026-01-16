@@ -9,7 +9,7 @@ module Magick
       before_action :set_feature, only: %i[show edit update enable disable enable_for_user enable_for_role disable_for_role update_targeting]
 
       # Make route helpers available in views via magick_admin_ui helper
-      helper_method :magick_admin_ui, :available_roles, :partially_enabled?
+      helper_method :magick_admin_ui, :available_roles, :available_tags, :partially_enabled?
 
       def magick_admin_ui
         Magick::AdminUI::Engine.routes.url_helpers
@@ -17,6 +17,10 @@ module Magick
 
       def available_roles
         Magick::AdminUI.config.available_roles || []
+      end
+
+      def available_tags
+        Magick::AdminUI.config.tags
       end
 
       def partially_enabled?(feature)
@@ -132,6 +136,21 @@ module Magick
         # Enable newly selected roles
         (selected_roles - current_roles).each do |role|
           @feature.enable_for_role(role) if role.present?
+        end
+
+        # Handle tags - always clear existing and set new ones
+        # Rails checkboxes don't send unchecked values, so we need to check what was sent
+        current_tags = current_targeting[:tag].is_a?(Array) ? current_targeting[:tag] : (current_targeting[:tag] ? [current_targeting[:tag]] : [])
+        selected_tags = Array(targeting_params[:tags]).reject(&:blank?)
+
+        # Disable tags that are no longer selected
+        (current_tags - selected_tags).each do |tag|
+          @feature.disable_for_tag(tag) if tag.present?
+        end
+
+        # Enable newly selected tags
+        (selected_tags - current_tags).each do |tag|
+          @feature.enable_for_tag(tag) if tag.present?
         end
 
         # Handle user IDs - replace existing user targeting

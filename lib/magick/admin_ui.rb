@@ -17,13 +17,21 @@ module Magick
       end
 
       class Configuration
-        attr_accessor :theme, :brand_name, :require_role, :available_roles
+        attr_accessor :theme, :brand_name, :require_role, :available_roles, :available_tags
 
         def initialize
           @theme = :light
           @brand_name = 'Magick'
           @require_role = nil
           @available_roles = [] # Can be populated via DSL: admin_ui { roles ['admin', 'user', 'manager'] }
+          @available_tags = nil # Can be array or lambda: -> { Tag.all }
+        end
+
+        # Get available tags, calling lambda if needed
+        def tags
+          return [] if @available_tags.nil?
+          return @available_tags.call if @available_tags.respond_to?(:call)
+          Array(@available_tags)
         end
       end
     end

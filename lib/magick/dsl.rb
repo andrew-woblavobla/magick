@@ -32,6 +32,10 @@ module Magick
       Magick[feature_name].enable_for_role(role_name)
     end
 
+    def enable_for_tag(feature_name, tag_name)
+      Magick[feature_name].enable_for_tag(tag_name)
+    end
+
     def enable_percentage(feature_name, percentage, type: :users)
       feature = Magick[feature_name]
       case type

@@ -131,6 +131,45 @@ if defined?(Rails)
       end
       expect(described_class.config.require_role).to eq(:admin)
     end
+
+    it 'allows configuring available tags as array' do
+      described_class.configure do |config|
+        config.available_tags = ['premium', 'beta', 'vip']
+      end
+      expect(described_class.config.tags).to eq(['premium', 'beta', 'vip'])
+    end
+
+    it 'allows configuring available tags as lambda' do
+      tag_lambda = -> { [double(id: 1, name: 'premium'), double(id: 2, name: 'beta')] }
+      described_class.configure do |config|
+        config.available_tags = tag_lambda
+      end
+      tags = described_class.config.tags
+      expect(tags.length).to eq(2)
+      expect(tags.first.id).to eq(1)
+      expect(tags.first.name).to eq('premium')
+    end
+
+    it 'returns empty array when tags are nil' do
+      described_class.configure do |config|
+        config.available_tags = nil
+      end
+      expect(described_class.config.tags).to eq([])
+    end
+
+    it 'calls lambda each time tags are accessed' do
+      call_count = 0
+      tag_lambda = -> { call_count += 1; ['tag1', 'tag2'] }
+      described_class.configure do |config|
+        config.available_tags = tag_lambda
+      end
+
+      expect(call_count).to eq(0)
+      described_class.config.tags
+      expect(call_count).to eq(1)
+      described_class.config.tags
+      expect(call_count).to eq(2)
+    end
   end
 end
 else

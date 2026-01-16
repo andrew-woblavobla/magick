@@ -70,11 +70,22 @@
       <% if roles_list.any? %>
         <div class="form-group">
           <label>Enable for Roles</label>
-          <div style="display: flex; flex-direction: column; gap: 8px;">
-            <% roles_list.each do |role| %>
-              <label style="display: inline-flex; align-items: center; cursor: pointer;">
-                <%= check_box_tag 'targeting[roles][]', role, current_roles.include?(role.to_s), id: "role_#{role}" %>
-                <span style="margin-left: 8px;"><%= role.to_s.humanize %></span>
+          <div class="tags-search-container">
+            <input type="text" id="roles_search" class="tags-search-input" placeholder="Search roles... (e.g., admin, manager)" autocomplete="off">
+            <div class="tags-count" id="roles_count">
+              <span id="roles_visible_count"><%= roles_list.length %></span> of <span id="roles_total_count"><%= roles_list.length %></span> roles
+            </div>
+          </div>
+          <div class="tags-checkbox-container" id="roles_checkbox_container">
+            <%# Render checked roles first, then unchecked %>
+            <% checked_roles, unchecked_roles = roles_list.partition { |role| current_roles.include?(role.to_s) } %>
+            <% (checked_roles + unchecked_roles).each do |role| %>
+              <% role_name = role.to_s %>
+              <% role_display = role.to_s.humanize %>
+              <% is_checked = current_roles.include?(role.to_s) %>
+              <label class="tag-checkbox-label <%= 'checked' if is_checked %>" data-role-name="<%= role_name.downcase %>" data-checked="<%= is_checked %>">
+                <%= check_box_tag 'targeting[roles][]', role, is_checked, id: "role_#{role}", class: 'tag-checkbox' %>
+                <span class="tag-checkbox-text"><%= role_display %></span>
               </label>
             <% end %>
           </div>
@@ -84,6 +95,42 @@
         <div class="alert alert-info">
           <p>No roles configured. Add roles via DSL:</p>
           <code>Magick::AdminUI.configure { |config| config.available_roles = ['admin', 'user', 'manager'] }</code>
+        </div>
+      <% end %>
+
+      <% current_tags = targeting[:tag].is_a?(Array) ? targeting[:tag] : (targeting[:tag] ? [targeting[:tag]] : []) %>
+      <% tags_list = available_tags %>
+      <% if tags_list.any? %>
+        <div class="form-group">
+          <label>Enable for Tags</label>
+          <div class="tags-search-container">
+            <input type="text" id="tags_search" class="tags-search-input" placeholder="Search tags... (e.g., test, MONITOR)" autocomplete="off">
+            <div class="tags-count" id="tags_count">
+              <span id="tags_visible_count"><%= tags_list.length %></span> of <span id="tags_total_count"><%= tags_list.length %></span> tags
+            </div>
+          </div>
+          <div class="tags-checkbox-container" id="tags_checkbox_container">
+            <%# Render checked tags first, then unchecked %>
+            <% checked_tags, unchecked_tags = tags_list.partition do |tag|
+                 tag_id = tag.respond_to?(:id) ? tag.id.to_s : tag.to_s
+                 current_tags.include?(tag_id.to_s)
+               end %>
+            <% (checked_tags + unchecked_tags).each do |tag| %>
+              <% tag_id = tag.respond_to?(:id) ? tag.id.to_s : tag.to_s %>
+              <% tag_name = tag.respond_to?(:name) ? tag.name : (tag.respond_to?(:to_s) ? tag.to_s : tag_id) %>
+              <% is_checked = current_tags.include?(tag_id.to_s) %>
+              <label class="tag-checkbox-label <%= 'checked' if is_checked %>" data-tag-name="<%= tag_name.downcase %>" data-tag-id="<%= tag_id.downcase %>" data-checked="<%= is_checked %>">
+                <%= check_box_tag 'targeting[tags][]', tag_id, is_checked, id: "tag_#{tag_id}", class: 'tag-checkbox' %>
+                <span class="tag-checkbox-text"><%= tag_name %></span>
+              </label>
+            <% end %>
+          </div>
+          <small style="color: #999;">Select tags that should have access to this feature. Tags are loaded dynamically from your configuration.</small>
+        </div>
+      <% else %>
+        <div class="alert alert-info">
+          <p>No tags configured. Add tags via DSL:</p>
+          <code>Magick::AdminUI.configure { |config| config.available_tags = -> { Tag.all } }</code>
         </div>
       <% end %>
 

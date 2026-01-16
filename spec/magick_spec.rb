@@ -52,6 +52,37 @@ RSpec.describe Magick do
         expect(Magick.enabled?(:percentage_feature, user_id: 123)).to be true
       end
     end
+
+    context 'with tag targeting' do
+      before do
+        Magick.register_feature(:tag_feature, type: :boolean, default_value: false)
+      end
+
+      it 'enables feature for specific tags' do
+        feature = Magick[:tag_feature]
+        feature.set_value(true)
+        feature.enable_for_tag('premium')
+        expect(Magick.enabled?(:tag_feature, tags: ['premium'])).to be true
+        expect(Magick.enabled?(:tag_feature, tags: ['free'])).to be false
+      end
+
+      it 'enables feature when any tag matches' do
+        feature = Magick[:tag_feature]
+        feature.set_value(true)
+        feature.enable_for_tag('premium')
+        feature.enable_for_tag('beta')
+        expect(Magick.enabled?(:tag_feature, tags: ['premium', 'other'])).to be true
+        expect(Magick.enabled?(:tag_feature, tags: ['beta'])).to be true
+      end
+
+      it 'works with user object that has tags' do
+        mock_user = double('User', id: 123, tags: [double(id: 1), double(id: 2)])
+        feature = Magick[:tag_feature]
+        feature.set_value(true)
+        feature.enable_for_tag('1')
+        expect(Magick.enabled_for?(:tag_feature, mock_user)).to be true
+      end
+    end
   end
 
   describe '.disabled?' do
@@ -76,6 +107,27 @@ RSpec.describe Magick do
       expect(Magick.features).not_to be_empty
       Magick.reset!
       expect(Magick.features).to be_empty
+    end
+  end
+
+  describe 'DSL methods' do
+    before do
+      Magick.register_feature(:dsl_tag_feature, type: :boolean, default_value: false)
+    end
+
+    describe 'enable_for_tag' do
+      it 'enables feature for tag via DSL' do
+        enable_for_tag(:dsl_tag_feature, 'premium')
+        expect(Magick.enabled?(:dsl_tag_feature, tags: ['premium'])).to be true
+        expect(Magick.enabled?(:dsl_tag_feature, tags: ['free'])).to be false
+      end
+
+      it 'works with multiple tags' do
+        enable_for_tag(:dsl_tag_feature, 'premium')
+        enable_for_tag(:dsl_tag_feature, 'beta')
+        expect(Magick.enabled?(:dsl_tag_feature, tags: ['premium'])).to be true
+        expect(Magick.enabled?(:dsl_tag_feature, tags: ['beta'])).to be true
+      end
     end
   end
 end
