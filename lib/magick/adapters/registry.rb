@@ -5,6 +5,8 @@ module Magick
     class Registry
       CACHE_INVALIDATION_CHANNEL = 'magick:cache:invalidate'
 
+      LOCAL_WRITE_TTL = 2.0 # seconds to ignore self-invalidation after a local write
+
       def initialize(memory_adapter, redis_adapter = nil, active_record_adapter: nil, circuit_breaker: nil,
                      async: false, primary: nil)
         @memory_adapter = memory_adapter
@@ -17,6 +19,7 @@ module Magick
         @subscriber = nil
         @refresh_thread = nil
         @last_reload_times = {} # Track last reload time per feature for debouncing
+        @local_writes = {} # Track recent local writes to skip self-invalidation
         @reload_mutex = Mutex.new
         # Only start Pub/Sub subscriber if Redis is available
         # In memory-only mode, each process has isolated cache (no cross-process invalidation)
@@ -59,6 +62,9 @@ module Magick
         # Update memory first (always synchronous)
         memory_adapter&.set(feature_name, key, value)
 
+        # Record local write so the subscriber skips self-invalidation
+        record_local_write(feature_name)
+
         # Update Redis if available
         if redis_adapter
           update_redis = proc do
@@ -66,18 +72,17 @@ module Magick
               redis_adapter.set(feature_name, key, value)
             end
           rescue AdapterError => e
-            # Log error but don't fail - memory is updated
             warn "Failed to update Redis: #{e.message}" if defined?(Rails) && Rails.env.development?
           end
 
           if @async && defined?(Thread)
-            # For async updates, publish cache invalidation synchronously
-            # This ensures other processes are notified immediately, even if Redis update is delayed
-            publish_cache_invalidation(feature_name)
-            Thread.new { update_redis.call }
+            Thread.new do
+              update_redis.call
+              # Publish AFTER Redis write so other processes read fresh data
+              publish_cache_invalidation(feature_name)
+            end
           else
             update_redis.call
-            # Publish cache invalidation message to notify other processes
             publish_cache_invalidation(feature_name)
           end
         end
@@ -88,7 +93,6 @@ module Magick
         begin
           active_record_adapter.set(feature_name, key, value)
         rescue AdapterError => e
-          # Log error but don't fail
           warn "Failed to update Active Record: #{e.message}" if defined?(Rails) && Rails.env.development?
         end
       end
@@ -209,6 +213,9 @@ module Magick
       def set_all_data(feature_name, data_hash)
         memory_adapter&.set_all_data(feature_name, data_hash)
 
+        # Record local write so the subscriber skips self-invalidation
+        record_local_write(feature_name)
+
         if redis_adapter
           update_redis = proc do
             circuit_breaker.call do
@@ -219,8 +226,11 @@ module Magick
           end
 
           if @async && defined?(Thread)
-            publish_cache_invalidation(feature_name)
-            Thread.new { update_redis.call }
+            Thread.new do
+              update_redis.call
+              # Publish AFTER Redis write so other processes read fresh data
+              publish_cache_invalidation(feature_name)
+            end
           else
             update_redis.call
             publish_cache_invalidation(feature_name)
@@ -278,6 +288,29 @@ module Magick
 
       attr_reader :memory_adapter, :redis_adapter, :active_record_adapter, :circuit_breaker
 
+      # Record that this process just wrote a feature, so the subscriber
+      # ignores its own Pub/Sub messages and doesn't revert the correct in-memory state.
+      def record_local_write(feature_name)
+        @reload_mutex.synchronize do
+          @local_writes[feature_name.to_s] = Time.now.to_f
+        end
+      end
+
+      # Check if a feature was recently written by this process
+      def local_write?(feature_name_str)
+        @reload_mutex.synchronize do
+          wrote_at = @local_writes[feature_name_str]
+          return false unless wrote_at
+
+          if (Time.now.to_f - wrote_at) < LOCAL_WRITE_TTL
+            true
+          else
+            @local_writes.delete(feature_name_str)
+            false
+          end
+        end
+      end
+
       # Start a background thread to listen for cache invalidation messages
       def start_cache_invalidation_subscriber
         return unless redis_adapter && defined?(Thread)
@@ -311,8 +344,17 @@ module Magick
             on.message do |_channel, feature_name|
               feature_name_str = feature_name.to_s
 
+              # Skip self-invalidation: if this process just wrote this feature,
+              # memory already has the correct value. Reloading from Redis would
+              # revert it to stale data (especially with async writes).
+              if local_write?(feature_name_str)
+                if defined?(Rails) && Rails.env.development?
+                  Rails.logger.debug "Magick: Skipping self-invalidation for '#{feature_name_str}'"
+                end
+                next
+              end
+
               # Debounce: only reload if we haven't reloaded this feature in the last 100ms
-              # This prevents duplicate reloads from multiple invalidation messages
               should_reload = @reload_mutex.synchronize do
                 last_reload = @last_reload_times[feature_name_str]
                 now = Time.now.to_f
@@ -329,13 +371,12 @@ module Magick
               # Invalidate memory cache for this feature
               memory_adapter.delete(feature_name_str) if memory_adapter
 
-              # Also reload the feature instance in Magick.features if it exists
-              # This ensures the feature instance has the latest targeting and values
+              # Reload the feature instance from the adapter (Redis should have fresh data
+              # since remote processes publish AFTER their Redis write completes)
               if defined?(Magick) && Magick.features.key?(feature_name_str)
                 feature = Magick.features[feature_name_str]
                 if feature.respond_to?(:reload)
                   feature.reload
-                  # Log for debugging (only in development, and only once per debounce period)
                   if defined?(Rails) && Rails.env.development?
                     Rails.logger.debug "Magick: Reloaded feature '#{feature_name_str}' after cache invalidation"
                   end
