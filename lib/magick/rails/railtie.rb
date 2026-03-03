@@ -103,6 +103,15 @@ if defined?(Rails)
             rescue StandardError
               nil
             end
+
+            # Warm the memory cache: bulk-load all features in 1-2 queries
+            # instead of N queries per feature on first access
+            begin
+              Magick.preload!
+              Rails.logger&.info "Magick: Preloaded #{Magick.features.size} features into memory cache"
+            rescue StandardError => e
+              Rails.logger&.warn "Magick: Failed to preload features: #{e.message}"
+            end
           end
         end
 

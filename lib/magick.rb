@@ -231,6 +231,23 @@ module Magick
       performance_metrics&.most_used_features(limit: limit) || {}
     end
 
+    # Preload all features into memory cache in minimal queries.
+    # Call after configuration and feature registration to avoid per-feature cache misses.
+    def preload!
+      registry = adapter_registry || default_adapter_registry
+      return unless registry
+
+      # Bulk load all feature data into memory (1-2 queries total)
+      all_data = registry.preload!
+
+      # Also preload registered features' state from the cached data
+      features.each_value do |feature|
+        feature.reload
+      end
+
+      all_data
+    end
+
     def reset!
       @features = {}
       @adapter_registry = nil

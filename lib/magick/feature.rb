@@ -418,15 +418,16 @@ module Magick
     def set_value(value, user_id: nil)
       old_value = @stored_value
       validate_value!(value)
-      adapter_registry.set(name, 'value', value)
-      adapter_registry.set(name, 'type', type)
-      adapter_registry.set(name, 'status', status)
-      adapter_registry.set(name, 'default_value', default_value)
-      adapter_registry.set(name, 'description', description) if description
-      adapter_registry.set(name, 'display_name', display_name) if display_name
-      adapter_registry.set(name, 'group', group) if group
+
+      # Bulk write all metadata in a single adapter call instead of 7 separate calls
+      data = { 'value' => value, 'type' => type, 'status' => status, 'default_value' => default_value }
+      data['description'] = description if description
+      data['display_name'] = display_name if display_name
+      data['group'] = group if group
+      adapter_registry.set_all_data(name, data)
+
       @stored_value = value
-      @stored_value_initialized = true # Mark as initialized
+      @stored_value_initialized = true
 
       # Update registered feature instance if it exists
       if Magick.features.key?(name)
@@ -438,7 +439,6 @@ module Magick
 
       changes = { value: { from: old_value, to: value } }
 
-      # Audit log
       Magick.audit_log&.log(
         name,
         'set_value',
@@ -446,7 +446,6 @@ module Magick
         changes: changes
       )
 
-      # Rails 8+ events
       if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
         Magick::Rails::Events.feature_changed(name, changes: changes, user_id: user_id)
         Magick::Rails::Events.audit_logged(name, action: 'set_value', user_id: user_id, changes: changes)
@@ -624,65 +623,80 @@ module Magick
     attr_reader :targeting
 
     def stored_value
-      # Always go through adapter to check for cross-process updates via version checking
-      # The adapter registry will check Redis version and invalidate memory cache if stale
+      return @stored_value if @stored_value_initialized
+
       load_value_from_adapter
     end
 
     def load_from_adapter
-      # Load value from adapter
-      loaded_value = load_value_from_adapter
-      # Set @stored_value if we got a value from adapter (can be false, true, '', 0, etc.)
-      # Only set if loaded_value is not nil (nil means not found in adapter)
-      unless loaded_value.nil?
+      # Load ALL keys for this feature in a single adapter call (1 query instead of 6)
+      all_data = adapter_registry.get_all_data(name)
+
+      # Parse value
+      raw_value = all_data['value']
+      unless raw_value.nil?
+        loaded_value = cast_value(raw_value)
         @stored_value = loaded_value
         @stored_value_initialized = true
       end
 
-      status_value = adapter_registry.get(name, 'status')
+      # Parse status
+      status_value = all_data['status']
       @status = status_value ? status_value.to_sym : status
 
       # Load description from adapter only if not provided in DSL
-      # DSL (features.rb) is the source of truth, so don't override DSL values
       unless @description
-        description_value = adapter_registry.get(name, 'description')
+        description_value = all_data['description']
         @description = description_value if description_value
       end
 
       # Load display_name from adapter only if not provided in DSL
-      # DSL (features.rb) is the source of truth, so don't override DSL values
       unless @display_name
-        display_name_value = adapter_registry.get(name, 'display_name')
+        display_name_value = all_data['display_name']
         @display_name = display_name_value if display_name_value
       end
 
       # Load group from adapter (can be set via DSL or Admin UI)
-      group_value = adapter_registry.get(name, 'group')
+      group_value = all_data['group']
       @group = group_value if group_value
 
-      targeting_value = adapter_registry.get(name, 'targeting')
+      targeting_value = all_data['targeting']
       if targeting_value.is_a?(Hash)
-        # Normalize keys to symbols and handle nested structures
         @targeting = targeting_value.transform_keys(&:to_sym)
-        # Handle percentage_users and percentage_requests which might be stored as numbers
         @targeting[:percentage_users] = @targeting[:percentage_users].to_f if @targeting[:percentage_users]
         @targeting[:percentage_requests] = @targeting[:percentage_requests].to_f if @targeting[:percentage_requests]
       else
         @targeting = {}
       end
+
+      # Track what was loaded so save_metadata_if_new can skip unnecessary writes
+      @_loaded_description = all_data['description']
+      @_loaded_display_name = all_data['display_name']
+      @_loaded_group = all_data['group']
     end
 
     def save_metadata_if_new
-      # Always save description and display_name from DSL to adapter
-      # The features.rb file is the source of truth for metadata
-      # This ensures metadata is always up-to-date even if feature already exists
-      adapter_registry.set(name, 'description', @description) if @description
-      adapter_registry.set(name, 'display_name', @display_name) if @display_name
-      adapter_registry.set(name, 'group', @group) if @group
+      # Only write to adapter if the DSL value differs from what was loaded
+      # This avoids unnecessary find_or_initialize_by + save! calls on every boot
+      if @description && @description != @_loaded_description
+        adapter_registry.set(name, 'description', @description)
+      end
+      if @display_name && @display_name != @_loaded_display_name
+        adapter_registry.set(name, 'display_name', @display_name)
+      end
+      if @group && @group != @_loaded_group
+        adapter_registry.set(name, 'group', @group)
+      end
     end
 
     def load_value_from_adapter
       value = adapter_registry.get(name, 'value')
+      return nil if value.nil?
+
+      cast_value(value)
+    end
+
+    def cast_value(value)
       return nil if value.nil?
 
       case type

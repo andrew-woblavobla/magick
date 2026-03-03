@@ -82,6 +82,63 @@ module Magick
         raise AdapterError, "Failed to get all features from ActiveRecord: #{e.message}"
       end
 
+      def get_all_data(feature_name)
+        record = @model_class.find_by(feature_name: feature_name.to_s)
+        return {} unless record
+
+        data = record.data || {}
+        return {} unless data.is_a?(Hash)
+
+        data.each_with_object({}) do |(k, v), result|
+          result[k.to_s] = deserialize_value(v)
+        end
+      rescue StandardError => e
+        raise AdapterError, "Failed to get all data from ActiveRecord: #{e.message}"
+      end
+
+      def load_all_features_data
+        records = @model_class.all
+        result = {}
+        records.each do |record|
+          data = record.data || {}
+          next unless data.is_a?(Hash)
+
+          feature_data = {}
+          data.each do |k, v|
+            feature_data[k.to_s] = deserialize_value(v)
+          end
+          result[record.feature_name] = feature_data
+        end
+        result
+      rescue StandardError => e
+        raise AdapterError, "Failed to load all features from ActiveRecord: #{e.message}"
+      end
+
+      def set_all_data(feature_name, data_hash)
+        feature_name_str = feature_name.to_s
+        retries = 5
+        begin
+          record = @model_class.find_or_initialize_by(feature_name: feature_name_str)
+          existing_data = record.data || {}
+          existing_data = {} unless existing_data.is_a?(Hash)
+          data_hash.each do |key, value|
+            existing_data[key.to_s] = serialize_value(value)
+          end
+          record.data = existing_data
+          record.updated_at = defined?(Time.current) ? Time.current : Time.now
+          record.save!
+        rescue ::ActiveRecord::StatementInvalid, ::ActiveRecord::ConnectionTimeoutError => e
+          if (e.message.include?('database is locked') || e.message.include?('busy') || e.message.include?('timeout')) && retries > 0
+            retries -= 1
+            sleep(0.01 * (6 - retries))
+            retry
+          end
+          raise AdapterError, "Failed to set all data in ActiveRecord: #{e.message}"
+        rescue StandardError => e
+          raise AdapterError, "Failed to set all data in ActiveRecord: #{e.message}"
+        end
+      end
+
       private
 
       def default_model_class

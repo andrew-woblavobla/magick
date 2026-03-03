@@ -15,6 +15,7 @@ module Magick
         @primary = primary || :memory # :memory, :redis, or :active_record
         @subscriber_thread = nil
         @subscriber = nil
+        @refresh_thread = nil
         @last_reload_times = {} # Track last reload time per feature for debouncing
         @reload_mutex = Mutex.new
         # Only start Pub/Sub subscriber if Redis is available
@@ -31,12 +32,10 @@ module Magick
         if redis_adapter
           begin
             value = redis_adapter.get(feature_name, key)
-            # Update memory cache if found in Redis
-            if value && memory_adapter
+            if !value.nil? && memory_adapter
               memory_adapter.set(feature_name, key, value)
               return value
             end
-            # If Redis returns nil, continue to next adapter
           rescue StandardError, AdapterError
             # Redis failed, continue to next adapter
           end
@@ -46,11 +45,9 @@ module Magick
         if active_record_adapter
           begin
             value = active_record_adapter.get(feature_name, key)
-            # Update memory cache if found in Active Record
-            memory_adapter.set(feature_name, key, value) if value && memory_adapter
+            memory_adapter.set(feature_name, key, value) if !value.nil? && memory_adapter
             return value
           rescue StandardError, AdapterError
-            # Active Record failed, return nil
             nil
           end
         end
@@ -132,6 +129,111 @@ module Magick
         features += redis_adapter.all_features if redis_adapter
         features += active_record_adapter.all_features if active_record_adapter
         features.uniq
+      end
+
+      # Load all keys for a single feature in one call instead of N separate get() calls
+      def get_all_data(feature_name)
+        # Try memory first
+        if memory_adapter
+          data = memory_adapter.get_all_data(feature_name)
+          return data unless data.nil? || data.empty?
+        end
+
+        # Fall back to Redis
+        if redis_adapter
+          begin
+            data = redis_adapter.get_all_data(feature_name)
+            if data && !data.empty?
+              memory_adapter.set_all_data(feature_name, data) if memory_adapter
+              return data
+            end
+          rescue StandardError, AdapterError
+            # Redis failed, continue
+          end
+        end
+
+        # Fall back to Active Record
+        if active_record_adapter
+          begin
+            data = active_record_adapter.get_all_data(feature_name)
+            if data && !data.empty?
+              memory_adapter.set_all_data(feature_name, data) if memory_adapter
+              return data
+            end
+          rescue StandardError, AdapterError
+            # AR failed
+          end
+        end
+
+        {}
+      end
+
+      # Bulk load ALL features into memory cache in minimal queries.
+      # Call this after configuration to warm the cache.
+      def preload!
+        all_data = {}
+
+        # Load from ActiveRecord first (source of truth for persistence)
+        if active_record_adapter
+          begin
+            all_data = active_record_adapter.load_all_features_data
+          rescue StandardError, AdapterError
+            # AR failed, try Redis
+          end
+        end
+
+        # Merge/override with Redis data (more up-to-date than AR in most setups)
+        if redis_adapter
+          begin
+            redis_data = redis_adapter.load_all_features_data
+            redis_data.each do |feature_name, data|
+              all_data[feature_name] ||= {}
+              all_data[feature_name].merge!(data)
+            end
+          rescue StandardError, AdapterError
+            # Redis failed, use what we have from AR
+          end
+        end
+
+        # Populate memory cache in bulk
+        if memory_adapter && !all_data.empty?
+          all_data.each do |feature_name, data|
+            memory_adapter.set_all_data(feature_name, data)
+          end
+        end
+
+        all_data
+      end
+
+      # Bulk set multiple keys for a feature in one call (1 query instead of N)
+      def set_all_data(feature_name, data_hash)
+        memory_adapter&.set_all_data(feature_name, data_hash)
+
+        if redis_adapter
+          update_redis = proc do
+            circuit_breaker.call do
+              redis_adapter.set_all_data(feature_name, data_hash)
+            end
+          rescue AdapterError => e
+            warn "Failed to bulk update Redis: #{e.message}" if defined?(Rails) && Rails.env.development?
+          end
+
+          if @async && defined?(Thread)
+            publish_cache_invalidation(feature_name)
+            Thread.new { update_redis.call }
+          else
+            update_redis.call
+            publish_cache_invalidation(feature_name)
+          end
+        end
+
+        if active_record_adapter
+          begin
+            active_record_adapter.set_all_data(feature_name, data_hash)
+          rescue AdapterError => e
+            warn "Failed to bulk update Active Record: #{e.message}" if defined?(Rails) && Rails.env.development?
+          end
+        end
       end
 
       # Explicitly trigger cache invalidation for a feature

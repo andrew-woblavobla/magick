@@ -44,6 +44,51 @@ module Magick
         raise AdapterError, "Failed to get all features from Redis: #{e.message}"
       end
 
+      def get_all_data(feature_name)
+        raw = redis.hgetall(key_for(feature_name))
+        return {} if raw.nil? || raw.empty?
+
+        raw.each_with_object({}) do |(k, v), result|
+          result[k.to_s] = deserialize_value(v)
+        end
+      rescue StandardError => e
+        raise AdapterError, "Failed to get all data from Redis: #{e.message}"
+      end
+
+      def load_all_features_data
+        pattern = "#{namespace}:*"
+        keys = redis.keys(pattern)
+        return {} if keys.empty?
+
+        result = {}
+        keys.each do |key|
+          feature_name = key.sub("#{namespace}:", '')
+          raw = redis.hgetall(key)
+          next if raw.nil? || raw.empty?
+
+          feature_data = {}
+          raw.each do |k, v|
+            feature_data[k.to_s] = deserialize_value(v)
+          end
+          result[feature_name] = feature_data
+        end
+        result
+      rescue StandardError => e
+        raise AdapterError, "Failed to load all features from Redis: #{e.message}"
+      end
+
+      def set_all_data(feature_name, data_hash)
+        return if data_hash.nil? || data_hash.empty?
+
+        serialized = {}
+        data_hash.each do |key, value|
+          serialized[key.to_s] = serialize_value(value)
+        end
+        redis.mapped_hmset(key_for(feature_name), serialized)
+      rescue StandardError => e
+        raise AdapterError, "Failed to set all data in Redis: #{e.message}"
+      end
+
       private
 
       attr_reader :redis, :namespace
