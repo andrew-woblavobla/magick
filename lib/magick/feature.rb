@@ -924,16 +924,16 @@ module Magick
     end
 
     def disable_dependent_features(user_id: nil)
-      # Find all features that depend on this feature
-      dependent_features = find_dependent_features
+      # Cascade-disable this feature's own dependencies (downstream sub-features).
+      # e.g. if A depends on B, disabling A also disables B.
+      # But disabling B does NOT cascade up to A.
+      deps = @dependencies || []
+      return if deps.empty?
 
-      # Disable each dependent feature by setting value directly (avoid recursion)
-      dependent_features.each do |dep_feature_name|
-        dep_feature = Magick.features[dep_feature_name.to_s] || Magick[dep_feature_name]
+      deps.each do |dep_name|
+        dep_feature = Magick.features[dep_name.to_s] || Magick[dep_name]
         next unless dep_feature
 
-        # Set value directly to avoid recursive disable calls
-        # Clear targeting and set value to false/empty/0 based on type
         dep_feature.instance_variable_set(:@targeting, {})
         dep_feature.save_targeting
 
@@ -946,9 +946,8 @@ module Magick
           dep_feature.set_value(0, user_id: user_id)
         end
 
-        # Rails 8+ event
         if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
-          Magick::Rails::Events.feature_disabled_globally(dep_feature_name, user_id: user_id)
+          Magick::Rails::Events.feature_disabled_globally(dep_name, user_id: user_id)
         end
       end
     end
