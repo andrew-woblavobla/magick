@@ -442,34 +442,38 @@ module Magick
       return nil unless targeting[:variants]
 
       variants = targeting[:variants]
-      selected_variant = if variants.length == 1
-                           variants.first[:name]
-                         else
-                           # Weighted random selection
-                           total_weight = variants.sum { |v| v[:weight] || 0 }
-                           if total_weight.zero?
-                             variants.first[:name]
-                           else
-                             random = rand(total_weight)
-                             current = 0
-                             selected = nil
-                             variants.each do |variant|
-                               current += variant[:weight] || 0
-                               if random < current
-                                 selected = variant[:name]
-                                 break
-                               end
-                             end
-                             selected || variants.first[:name]
-                           end
-                         end
+      return nil if variants.empty?
+      return variants.first[:name] if variants.length == 1
 
-      # Rails 8+ event
-      if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
-        Magick::Rails::Events.variant_selected(name, variant_name: selected_variant, context: context)
+      total_weight = variants.sum { |v| v[:weight] || 0 }
+      return variants.first[:name] if total_weight.zero?
+
+      # Deterministic assignment: use MD5 hash of feature_name + user_id
+      # This ensures the same user always gets the same variant
+      user_id = context[:user_id] || context[:user]&.respond_to?(:id) && context[:user].id
+      if user_id
+        hash = Digest::MD5.hexdigest("#{name}:variant:#{user_id}")
+        bucket = hash[0..7].to_i(16) % total_weight
+      else
+        # No user context — fall back to random (e.g., anonymous requests)
+        bucket = rand(total_weight)
       end
 
-      selected_variant
+      current = 0
+      variants.each do |variant|
+        current += (variant[:weight] || 0)
+        return variant[:name] if bucket < current
+      end
+
+      variants.last[:name]
+    end
+
+    def get_variant_value(context = {})
+      variant_name = get_variant(context)
+      return nil unless variant_name
+
+      variant = targeting[:variants]&.find { |v| v[:name] == variant_name }
+      variant&.dig(:value)
     end
 
     def set_value(value, user_id: nil)

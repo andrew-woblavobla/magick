@@ -76,7 +76,9 @@
             <td data-label="Value">
               <% if feature.type == :boolean %>
                 <% targeting = feature.instance_variable_get(:@targeting) || {} %>
-                <% if targeting.any? %>
+                <% if targeting[:variants].present? %>
+                  <span class="toggle-indicator" style="background: var(--color-primary); color: #fff;">A/B</span>
+                <% elsif targeting.any? %>
                   <span class="toggle-indicator toggle-partial">PARTIAL</span>
                 <% elsif feature.enabled? %>
                   <span class="toggle-indicator toggle-on">ON</span>

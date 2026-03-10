@@ -138,6 +138,52 @@
   </div>
 </div>
 
+<% variants = (@feature.instance_variable_get(:@targeting) || {})[:variants] %>
+<% if variants.present? && variants.any? %>
+  <div class="card">
+    <div class="card-header">
+      <h2>A/B Test Variants</h2>
+      <a href="<%= magick_admin_ui.edit_feature_path(@feature.name) %>#variants-section" class="link-subtle">Manage</a>
+    </div>
+    <div class="card-body" style="padding: 0;">
+      <table>
+        <thead>
+          <tr>
+            <th>Variant</th>
+            <th>Value</th>
+            <th style="text-align: right;">Weight</th>
+            <th style="text-align: right;">Distribution</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% total_weight = variants.sum { |v| (v[:weight] || v['weight'] || 0).to_f } %>
+          <% variants.each do |variant| %>
+            <% v_name = variant[:name] || variant['name'] %>
+            <% v_value = variant[:value] || variant['value'] %>
+            <% v_weight = (variant[:weight] || variant['weight'] || 0).to_f %>
+            <% percentage = total_weight > 0 ? (v_weight / total_weight * 100).round(1) : 0 %>
+            <tr>
+              <td>
+                <span style="font-weight: 600;"><%= v_name %></span>
+              </td>
+              <td><code><%= v_value %></code></td>
+              <td style="text-align: right; font-variant-numeric: tabular-nums;"><%= v_weight.to_i %></td>
+              <td style="text-align: right;">
+                <div style="display: flex; align-items: center; justify-content: flex-end; gap: 8px;">
+                  <div style="width: 80px; height: 6px; background: var(--color-border); border-radius: 3px; overflow: hidden;">
+                    <div style="width: <%= percentage %>%; height: 100%; background: var(--color-primary); border-radius: 3px;"></div>
+                  </div>
+                  <span style="font-size: 12px; font-weight: 500; color: var(--color-text-secondary); min-width: 40px; text-align: right;"><%= percentage %>%</span>
+                </div>
+              </td>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+  </div>
+<% end %>
+
 <% dependencies = @feature.dependencies %>
 <% if dependencies.any? %>
   <div class="card">

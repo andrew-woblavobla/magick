@@ -7,7 +7,7 @@ module Magick
       include Magick::AdminUI::Engine.routes.url_helpers
       layout 'application'
       before_action :authenticate_admin!
-      before_action :set_feature, only: %i[show edit update enable disable enable_for_user enable_for_role disable_for_role update_targeting]
+      before_action :set_feature, only: %i[show edit update enable disable enable_for_user enable_for_role disable_for_role update_targeting update_variants]
 
       # Make route helpers available in views via magick_admin_ui helper
       helper_method :magick_admin_ui, :available_roles, :available_tags, :partially_enabled?
@@ -265,6 +265,35 @@ module Magick
       rescue StandardError => e
         Rails.logger.error "Magick: Error updating targeting: #{e.message}\n#{e.backtrace.first(5).join("\n")}" if defined?(Rails)
         redirect_to magick_admin_ui.feature_path(@feature.name), alert: "Error updating targeting: #{e.message}"
+      end
+
+      def update_variants
+        variants_data = []
+
+        if params[:variants].present?
+          params[:variants].each do |_index, variant_params|
+            next if variant_params[:name].blank?
+
+            variants_data << {
+              name: variant_params[:name].strip,
+              value: variant_params[:value].to_s.strip,
+              weight: (variant_params[:weight].presence || 0).to_f
+            }
+          end
+        end
+
+        if variants_data.any?
+          @feature.set_variants(variants_data)
+        else
+          # Clear variants if all removed
+          @feature.instance_variable_get(:@targeting)&.delete(:variants)
+          @feature.save_targeting
+        end
+
+        redirect_to magick_admin_ui.feature_path(@feature.name), notice: 'Variants updated successfully'
+      rescue StandardError => e
+        Rails.logger.error "Magick: Error updating variants: #{e.message}" if defined?(Rails)
+        redirect_to magick_admin_ui.feature_path(@feature.name), alert: "Error updating variants: #{e.message}"
       end
 
       private

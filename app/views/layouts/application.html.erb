@@ -1291,6 +1291,50 @@
       searchInput.addEventListener('input', filterFeatures);
       if (groupSelect) groupSelect.addEventListener('change', filterFeatures);
     })();
+
+    // Variants management
+    (function() {
+      const addBtn = document.getElementById('add_variant_btn');
+      const container = document.getElementById('variants_container');
+      if (!addBtn || !container) return;
+
+      let variantIndex = container.querySelectorAll('.variant-row').length;
+
+      addBtn.addEventListener('click', function() {
+        const noMsg = document.getElementById('no_variants_message');
+        if (noMsg) noMsg.remove();
+
+        const row = document.createElement('div');
+        row.className = 'variant-row';
+        row.setAttribute('data-variant-index', variantIndex);
+        row.innerHTML = '<div style="display: grid; grid-template-columns: 1fr 1fr auto auto; gap: 12px; align-items: end; margin-bottom: 12px; padding: 12px; background: var(--color-bg); border: 1px solid var(--color-border); border-radius: var(--radius-sm);">' +
+          '<div><label class="form-label" style="margin-bottom: 4px; font-size: 12px;">Name</label>' +
+          '<input type="text" name="variants[' + variantIndex + '][name]" placeholder="e.g., control" required></div>' +
+          '<div><label class="form-label" style="margin-bottom: 4px; font-size: 12px;">Value</label>' +
+          '<input type="text" name="variants[' + variantIndex + '][value]" placeholder="e.g., #0066cc"></div>' +
+          '<div><label class="form-label" style="margin-bottom: 4px; font-size: 12px;">Weight</label>' +
+          '<input type="number" name="variants[' + variantIndex + '][weight]" value="0" min="0" max="1000" style="width: 80px;"></div>' +
+          '<div style="padding-bottom: 2px;"><button type="button" class="btn btn-ghost btn-sm remove-variant-btn" onclick="this.closest(\'.variant-row\').remove(); updateVariantIndices();" title="Remove variant" style="color: var(--color-danger);">&times;</button></div>' +
+          '</div>';
+        container.appendChild(row);
+        variantIndex++;
+      });
+    })();
+
+    function updateVariantIndices() {
+      const container = document.getElementById('variants_container');
+      if (!container) return;
+      const rows = container.querySelectorAll('.variant-row');
+      rows.forEach(function(row, i) {
+        row.setAttribute('data-variant-index', i);
+        row.querySelectorAll('input').forEach(function(input) {
+          const name = input.getAttribute('name');
+          if (name) {
+            input.setAttribute('name', name.replace(/variants\[\d+\]/, 'variants[' + i + ']'));
+          }
+        });
+      });
+    }
   </script>
 </body>
 </html>

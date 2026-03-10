@@ -150,6 +150,16 @@ module Magick
       !enabled?(feature_name, context)
     end
 
+    def variant(feature_name, context = {})
+      feature = features[feature_name.to_s] || self[feature_name]
+      feature.get_variant(context)
+    end
+
+    def variant_value(feature_name, context = {})
+      feature = features[feature_name.to_s] || self[feature_name]
+      feature.get_variant_value(context)
+    end
+
     def exists?(feature_name)
       features.key?(feature_name.to_s) || (adapter_registry || default_adapter_registry).exists?(feature_name)
     end

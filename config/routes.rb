@@ -10,6 +10,7 @@ Magick::AdminUI::Engine.routes.draw do
       put :enable_for_role
       put :disable_for_role
       put :update_targeting
+      put :update_variants
     end
   end
   resources :stats, only: [:show]

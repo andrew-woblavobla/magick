@@ -278,3 +278,55 @@
     <% end %>
   </div>
 </div>
+
+<div class="card" id="variants-section">
+  <div class="card-header">
+    <h2>A/B Test Variants</h2>
+  </div>
+  <div class="card-body">
+    <%= form_with url: magick_admin_ui.update_variants_feature_path(@feature.name), method: :put, local: true do |f| %>
+      <p style="font-size: 13px; color: var(--color-text-secondary); margin-bottom: 16px;">Define experiment variants with weights. Users are deterministically assigned to variants based on their user ID.</p>
+
+      <% current_variants = (@feature.instance_variable_get(:@targeting) || {})[:variants] || [] %>
+
+      <div id="variants_container">
+        <% if current_variants.any? %>
+          <% current_variants.each_with_index do |variant, index| %>
+            <div class="variant-row" data-variant-index="<%= index %>">
+              <div style="display: grid; grid-template-columns: 1fr 1fr auto auto; gap: 12px; align-items: end; margin-bottom: 12px; padding: 12px; background: var(--color-bg); border: 1px solid var(--color-border); border-radius: var(--radius-sm);">
+                <div>
+                  <label class="form-label" style="margin-bottom: 4px; font-size: 12px;">Name</label>
+                  <input type="text" name="variants[<%= index %>][name]" value="<%= variant[:name] || variant['name'] %>" placeholder="e.g., control" required>
+                </div>
+                <div>
+                  <label class="form-label" style="margin-bottom: 4px; font-size: 12px;">Value</label>
+                  <input type="text" name="variants[<%= index %>][value]" value="<%= variant[:value] || variant['value'] %>" placeholder="e.g., #0066cc">
+                </div>
+                <div>
+                  <label class="form-label" style="margin-bottom: 4px; font-size: 12px;">Weight</label>
+                  <input type="number" name="variants[<%= index %>][weight]" value="<%= (variant[:weight] || variant['weight'] || 0).to_i %>" min="0" max="1000" style="width: 80px;">
+                </div>
+                <div style="padding-bottom: 2px;">
+                  <button type="button" class="btn btn-ghost btn-sm remove-variant-btn" onclick="this.closest('.variant-row').remove(); updateVariantIndices();" title="Remove variant" style="color: var(--color-danger);">&times;</button>
+                </div>
+              </div>
+            </div>
+          <% end %>
+        <% else %>
+          <p id="no_variants_message" style="color: var(--color-text-muted); font-size: 13px; margin-bottom: 16px;">No variants configured. Add variants to create an A/B test.</p>
+        <% end %>
+      </div>
+
+      <div style="margin-bottom: 20px;">
+        <button type="button" class="btn btn-secondary btn-sm" id="add_variant_btn">+ Add Variant</button>
+      </div>
+
+      <div style="padding-top: 20px; border-top: 1px solid var(--color-border);">
+        <div class="btn-group">
+          <%= submit_tag 'Save Variants', class: 'btn btn-primary' %>
+          <a href="<%= magick_admin_ui.feature_path(@feature.name) %>" class="btn btn-secondary">Cancel</a>
+        </div>
+      </div>
+    <% end %>
+  </div>
+</div>

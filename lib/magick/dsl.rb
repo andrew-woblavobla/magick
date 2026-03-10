@@ -19,6 +19,15 @@ module Magick
       Magick.register_feature(name, type: :number, default_value: default, **options)
     end
 
+    def experiment(name, variants:, **options)
+      feature = Magick.register_feature(name, type: :boolean, default_value: false, **options)
+      variant_data = variants.map do |v|
+        { name: v[:name].to_s, value: v[:value], weight: (v[:weight] || 0).to_f }
+      end
+      feature.set_variants(variant_data)
+      feature
+    end
+
     # Targeting DSL methods
     def enable_for_user(feature_name, user_id)
       Magick[feature_name].enable_for_user(user_id)

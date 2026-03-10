@@ -5,6 +5,7 @@ A performant and memory-efficient feature toggle gem for Ruby and Rails applicat
 ## Features
 
 - **Multiple Feature Types**: Boolean, string, and number feature flags
+- **A/B Testing**: Built-in experiment support with deterministic, weighted variant assignment
 - **Flexible Targeting**: Enable features for specific users, groups, roles, tags, or percentages
 - **Exclusions**: Exclude specific users, groups, roles, tags, or IPs — exclusions always take priority over inclusions
 - **Dual Backend**: Memory adapter (fast) with Redis fallback (persistent)
@@ -359,6 +360,16 @@ string_feature :api_version, default: "v1", description: "API version"
 # Number features
 number_feature :max_results, default: 10, description: "Maximum results per page"
 
+# A/B test experiment
+experiment :checkout_button,
+  name: "Checkout Button",
+  description: "Button color experiment",
+  variants: [
+    { name: 'control', value: '#0066cc', weight: 50 },
+    { name: 'green', value: '#00cc66', weight: 30 },
+    { name: 'red', value: '#cc0000', weight: 20 }
+  ]
+
 # With status
 feature :experimental_feature,
   type: :boolean,
@@ -405,19 +416,64 @@ end
 
 ### Advanced Features
 
-#### Feature Variants (A/B Testing)
+#### A/B Testing (Experiments)
+
+Magick has built-in support for A/B testing with deterministic variant assignment. The same user always gets the same variant (based on MD5 hashing), ensuring consistent experiences.
+
+**Quick setup with DSL (`config/features.rb`):**
 
 ```ruby
-feature = Magick[:button_color]
-feature.set_variants([
-  { name: 'blue', value: '#0066cc', weight: 50 },
-  { name: 'green', value: '#00cc66', weight: 30 },
-  { name: 'red', value: '#cc0000', weight: 20 }
-])
-
-variant = feature.get_variant
-# Returns 'blue', 'green', or 'red' based on weights
+experiment :checkout_button,
+  name: "Checkout Button Color",
+  description: "Test which button color converts better",
+  variants: [
+    { name: 'control', value: '#0066cc', weight: 50 },
+    { name: 'green',   value: '#00cc66', weight: 30 },
+    { name: 'red',     value: '#cc0000', weight: 20 }
+  ]
 ```
+
+**Or set up programmatically:**
+
+```ruby
+feature = Magick[:checkout_button]
+feature.set_variants([
+  { name: 'control', value: '#0066cc', weight: 50 },
+  { name: 'green',   value: '#00cc66', weight: 30 },
+  { name: 'red',     value: '#cc0000', weight: 20 }
+])
+```
+
+**Usage in your application:**
+
+```ruby
+# Get the variant name for a user (deterministic — same user always gets same variant)
+variant = Magick.variant(:checkout_button, user_id: current_user.id)
+# => "control", "green", or "red"
+
+# Get the variant value directly
+color = Magick.variant_value(:checkout_button, user_id: current_user.id)
+# => "#0066cc", "#00cc66", or "#cc0000"
+
+# Works with user objects too
+variant = Magick.variant(:checkout_button, user: current_user)
+
+# Use in views/controllers
+class CheckoutController < ApplicationController
+  def show
+    @button_color = Magick.variant_value(:checkout_button, user: current_user)
+    # Same user always sees the same color
+  end
+end
+```
+
+**How it works:**
+- Variants are assigned using a deterministic MD5 hash of `feature_name + user_id`
+- The same user always gets the same variant across sessions and requests
+- Weights control the distribution (e.g., 50/30/20 means ~50% control, ~30% green, ~20% red)
+- If no `user_id` is provided, falls back to random assignment (useful for anonymous users)
+- Experiments are boolean features with variants — they work with all targeting and exclusion rules
+- Manage variants through the Admin UI with visual weight distribution
 
 #### Feature Dependencies
 
@@ -676,6 +732,7 @@ Once mounted, visit `/magick` in your browser to access the Admin UI.
   - **Exclusions**: Exclude users, roles, and tags from a feature (exclusions override inclusions)
   - **Visual Display**: See all active targeting rules with badges
 - **Edit Features**: Update feature values (boolean, string, number) directly from the UI
+- **A/B Test Management**: Create and manage experiment variants with visual weight distribution
 - **Statistics**: View performance metrics and usage statistics for each feature
 - **Feature Grouping**: Organize features into groups for easier management and filtering
 - **Filtering**: Filter features by group, name, or description
@@ -749,6 +806,7 @@ The Admin UI provides the following routes:
 - `PUT /magick/features/:id/enable_for_role` - Enable feature for specific role
 - `PUT /magick/features/:id/disable_for_role` - Disable feature for specific role
 - `PUT /magick/features/:id/update_targeting` - Update targeting rules (roles and users)
+- `PUT /magick/features/:id/update_variants` - Update A/B test variants
 - `GET /magick/stats/:id` - View feature statistics
 
 **Security:**

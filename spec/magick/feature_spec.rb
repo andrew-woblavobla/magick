@@ -875,4 +875,86 @@ RSpec.describe Magick::Feature do
       end
     end
   end
+
+  describe 'A/B testing (variants)' do
+    let(:experiment) { described_class.new(:button_color, adapter_registry, type: :boolean, default_value: false) }
+
+    before do
+      experiment.set_value(true)
+      experiment.set_variants([
+        { name: 'control', value: '#0066cc', weight: 50 },
+        { name: 'variant_a', value: '#00cc66', weight: 30 },
+        { name: 'variant_b', value: '#cc0000', weight: 20 }
+      ])
+    end
+
+    describe '#get_variant' do
+      it 'returns a variant name' do
+        variant = experiment.get_variant(user_id: 'user_1')
+        expect(%w[control variant_a variant_b]).to include(variant)
+      end
+
+      it 'returns deterministic variant for same user' do
+        variant1 = experiment.get_variant(user_id: 'user_42')
+        variant2 = experiment.get_variant(user_id: 'user_42')
+        expect(variant1).to eq(variant2)
+      end
+
+      it 'returns consistent variant across multiple calls' do
+        results = 10.times.map { experiment.get_variant(user_id: 'user_99') }
+        expect(results.uniq.length).to eq(1)
+      end
+
+      it 'distributes variants across different users' do
+        variants = 100.times.map { |i| experiment.get_variant(user_id: "user_#{i}") }
+        expect(variants.uniq.length).to be > 1
+      end
+
+      it 'returns nil when no variants are set' do
+        plain_feature = described_class.new(:no_variants, adapter_registry, type: :boolean, default_value: false)
+        expect(plain_feature.get_variant(user_id: 'user_1')).to be_nil
+      end
+
+      it 'returns first variant when only one exists' do
+        experiment.set_variants([{ name: 'only_one', value: 'solo', weight: 100 }])
+        expect(experiment.get_variant(user_id: 'user_1')).to eq('only_one')
+      end
+
+      it 'falls back to random when no user_id provided' do
+        variant = experiment.get_variant
+        expect(%w[control variant_a variant_b]).to include(variant)
+      end
+    end
+
+    describe '#get_variant_value' do
+      it 'returns the value of the assigned variant' do
+        variant_name = experiment.get_variant(user_id: 'user_42')
+        variant_value = experiment.get_variant_value(user_id: 'user_42')
+
+        expected_values = { 'control' => '#0066cc', 'variant_a' => '#00cc66', 'variant_b' => '#cc0000' }
+        expect(variant_value).to eq(expected_values[variant_name])
+      end
+
+      it 'returns nil when no variants are set' do
+        plain_feature = described_class.new(:no_variants, adapter_registry, type: :boolean, default_value: false)
+        expect(plain_feature.get_variant_value(user_id: 'user_1')).to be_nil
+      end
+    end
+
+    describe 'variant weight distribution' do
+      it 'respects approximate weight distribution over many users' do
+        counts = Hash.new(0)
+        1000.times do |i|
+          variant = experiment.get_variant(user_id: "user_#{i}")
+          counts[variant] += 1
+        end
+
+        # With 50/30/20 weights, we expect roughly 500/300/200 distribution
+        # Allow generous tolerance since MD5 hashing isn't perfectly uniform
+        expect(counts['control']).to be_between(350, 650)
+        expect(counts['variant_a']).to be_between(150, 450)
+        expect(counts['variant_b']).to be_between(50, 350)
+      end
+    end
+  end
 end
