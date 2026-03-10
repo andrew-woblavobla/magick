@@ -58,6 +58,27 @@ module Magick
       Magick[feature_name].enable_for_custom_attribute(attribute_name, values, operator: operator)
     end
 
+    # Exclusion DSL methods
+    def exclude_user(feature_name, user_id)
+      Magick[feature_name].exclude_user(user_id)
+    end
+
+    def exclude_tag(feature_name, tag_name)
+      Magick[feature_name].exclude_tag(tag_name)
+    end
+
+    def exclude_group(feature_name, group_name)
+      Magick[feature_name].exclude_group(group_name)
+    end
+
+    def exclude_role(feature_name, role_name)
+      Magick[feature_name].exclude_role(role_name)
+    end
+
+    def exclude_ip_addresses(feature_name, *ip_addresses)
+      Magick[feature_name].exclude_ip_addresses(ip_addresses)
+    end
+
     def set_variants(feature_name, variants)
       Magick[feature_name].set_variants(variants)
     end

@@ -19,3 +19,4 @@
 *.sublime-workspace
 requirements.md
 CLAUDE.md
+.rspec_status

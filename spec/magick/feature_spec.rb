@@ -334,6 +334,153 @@ RSpec.describe Magick::Feature do
     end
   end
 
+  describe 'exclusion targeting' do
+    describe '#exclude_user' do
+      it 'excludes user even when feature is globally enabled' do
+        feature.set_value(true)
+        feature.exclude_user(123)
+        expect(feature.enabled?(user_id: 123)).to be false
+      end
+
+      it 'does not affect non-excluded users' do
+        feature.set_value(true)
+        feature.exclude_user(123)
+        expect(feature.enabled?(user_id: 456)).to be true
+      end
+    end
+
+    describe '#remove_user_exclusion' do
+      it 'restores access after removing exclusion' do
+        feature.set_value(true)
+        feature.exclude_user(123)
+        expect(feature.enabled?(user_id: 123)).to be false
+
+        feature.remove_user_exclusion(123)
+        expect(feature.enabled?(user_id: 123)).to be true
+      end
+    end
+
+    describe '#exclude_tag' do
+      it 'excludes tag even when tag is targeted for inclusion' do
+        feature.set_value(true)
+        feature.enable_for_tag('premium')
+        feature.exclude_tag('premium')
+        expect(feature.enabled?(tags: ['premium'])).to be false
+      end
+
+      it 'does not affect non-excluded tags' do
+        feature.set_value(true)
+        feature.enable_for_tag('premium')
+        feature.enable_for_tag('beta')
+        feature.exclude_tag('premium')
+        expect(feature.enabled?(tags: ['beta'])).to be true
+      end
+    end
+
+    describe '#remove_tag_exclusion' do
+      it 'restores access after removing tag exclusion' do
+        feature.set_value(true)
+        feature.enable_for_tag('premium')
+        feature.exclude_tag('premium')
+        expect(feature.enabled?(tags: ['premium'])).to be false
+
+        feature.remove_tag_exclusion('premium')
+        expect(feature.enabled?(tags: ['premium'])).to be true
+      end
+    end
+
+    describe '#exclude_group' do
+      it 'excludes group even when feature is globally enabled' do
+        feature.set_value(true)
+        feature.enable_for_group('beta_testers')
+        feature.exclude_group('beta_testers')
+        expect(feature.enabled?(group: 'beta_testers')).to be false
+      end
+    end
+
+    describe '#exclude_role' do
+      it 'excludes role even when feature is globally enabled' do
+        feature.set_value(true)
+        feature.enable_for_role('admin')
+        feature.exclude_role('admin')
+        expect(feature.enabled?(role: 'admin')).to be false
+      end
+    end
+
+    describe 'exclusion priority over inclusion' do
+      it 'excludes user even when user is in targeted group' do
+        feature.set_value(true)
+        feature.enable_for_group('beta_testers')
+        feature.exclude_user(123)
+        expect(feature.enabled?(user_id: 123, group: 'beta_testers')).to be false
+      end
+
+      it 'excludes user even when user is in percentage targeting' do
+        feature.set_value(true)
+        feature.enable_percentage_of_users(100)
+        feature.exclude_user(123)
+        expect(feature.enabled?(user_id: 123)).to be false
+      end
+    end
+
+    describe 'multiple exclusion types simultaneously' do
+      it 'checks all exclusion types' do
+        feature.set_value(true)
+        feature.exclude_user(123)
+        feature.exclude_group('banned')
+        feature.exclude_role('suspended')
+
+        expect(feature.enabled?(user_id: 123)).to be false
+        expect(feature.enabled?(group: 'banned')).to be false
+        expect(feature.enabled?(role: 'suspended')).to be false
+        expect(feature.enabled?(user_id: 456)).to be true
+      end
+    end
+
+    describe '#exclude_ip_addresses' do
+      it 'excludes IP address even when feature is globally enabled' do
+        feature.set_value(true)
+        feature.exclude_ip_addresses(['192.168.1.0/24'])
+        expect(feature.enabled?(ip_address: '192.168.1.100')).to be false
+      end
+
+      it 'does not affect non-excluded IPs' do
+        feature.set_value(true)
+        feature.exclude_ip_addresses(['192.168.1.0/24'])
+        expect(feature.enabled?(ip_address: '10.0.0.1')).to be true
+      end
+    end
+
+    describe 'exclusions with enabled_for? using user objects' do
+      it 'excludes user object by user_id' do
+        feature.set_value(true)
+        feature.exclude_user(123)
+
+        mock_user = double('User', id: 123)
+        expect(feature.enabled_for?(mock_user)).to be false
+      end
+
+      it 'allows non-excluded user object' do
+        feature.set_value(true)
+        feature.exclude_user(123)
+
+        mock_user = double('User', id: 456)
+        expect(feature.enabled_for?(mock_user)).to be true
+      end
+    end
+
+    describe 'exclusions persist through to_h' do
+      it 'includes exclusion data in targeting hash' do
+        feature.exclude_user(123)
+        feature.exclude_tag('premium')
+
+        hash = feature.to_h
+        expect(hash[:targeting][:excluded_users]).to include('123')
+        expect(hash[:targeting][:excluded_tags]).to include('premium')
+      end
+    end
+  end
+
   describe 'string feature type' do
     let(:string_feature) do
       described_class.new(:api_version, adapter_registry, type: :string, default_value: 'v1')

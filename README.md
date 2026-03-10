@@ -6,6 +6,7 @@ A performant and memory-efficient feature toggle gem for Ruby and Rails applicat
 
 - **Multiple Feature Types**: Boolean, string, and number feature flags
 - **Flexible Targeting**: Enable features for specific users, groups, roles, tags, or percentages
+- **Exclusions**: Exclude specific users, groups, roles, tags, or IPs — exclusions always take priority over inclusions
 - **Dual Backend**: Memory adapter (fast) with Redis fallback (persistent)
 - **Rails Integration**: Seamless integration with Rails, including request store caching
 - **DSL Support**: Define features in a Ruby DSL file (`config/features.rb`)
@@ -193,6 +194,76 @@ feature.enable_for_ip_addresses('192.168.1.0/24', '10.0.0.1')
 feature.enable_for_custom_attribute(:subscription_tier, ['premium', 'enterprise'])
 ```
 
+### Feature Exclusions
+
+Exclusions let you block specific users, groups, roles, tags, or IP addresses from a feature — even if they match an inclusion rule. **Exclusions always take priority over inclusions.**
+
+```ruby
+feature = Magick[:new_dashboard]
+
+# Exclude specific users
+feature.exclude_user(456)
+feature.exclude_user(789)
+
+# Exclude specific tags
+feature.exclude_tag('legacy_tier')
+feature.exclude_tag('banned')
+
+# Exclude specific groups
+feature.exclude_group('suspended_users')
+
+# Exclude specific roles
+feature.exclude_role('guest')
+
+# Exclude IP addresses (supports CIDR notation)
+feature.exclude_ip_addresses(['10.0.0.0/8', '192.168.1.100'])
+
+# Remove exclusions
+feature.remove_user_exclusion(456)
+feature.remove_tag_exclusion('legacy_tier')
+feature.remove_group_exclusion('suspended_users')
+feature.remove_role_exclusion('guest')
+feature.remove_ip_exclusion  # Removes all IP exclusions
+```
+
+**Exclusions win over inclusions:**
+
+```ruby
+feature = Magick[:premium_features]
+feature.enable  # Enabled globally for everyone
+
+feature.exclude_user(123)
+Magick.enabled?(:premium_features, user_id: 123)  # => false (excluded)
+Magick.enabled?(:premium_features, user_id: 456)  # => true  (not excluded)
+
+# Even percentage targeting is overridden
+feature.enable_percentage_of_users(100)  # 100% of users
+feature.exclude_user(123)
+Magick.enabled?(:premium_features, user_id: 123)  # => false (still excluded)
+```
+
+**Exclusions in DSL (`config/features.rb`):**
+
+```ruby
+boolean_feature :new_dashboard, default: true
+
+# Exclude problematic users
+exclude_user :new_dashboard, 'user_123'
+exclude_user :new_dashboard, 'user_456'
+
+# Exclude legacy tiers
+exclude_tag :new_dashboard, 'legacy_tier'
+
+# Exclude groups
+exclude_group :new_dashboard, 'banned_users'
+
+# Exclude roles
+exclude_role :new_dashboard, 'suspended'
+
+# Exclude IPs
+exclude_ip_addresses :new_dashboard, '10.0.0.0/8'
+```
+
 ### Checking Feature Enablement with Objects
 
 You can check if a feature is enabled for an object (like a User model) and its fields:
@@ -258,6 +329,12 @@ result = feature.enable_for_role('admin')  # => true
 result = feature.enable_for_tag('premium') # => true
 result = feature.enable_percentage_of_users(25)  # => true
 result = feature.set_value(true)          # => true
+
+# Exclusion methods also return true
+result = feature.exclude_user(456)         # => true
+result = feature.exclude_tag('banned')     # => true
+result = feature.exclude_group('blocked')  # => true
+result = feature.exclude_role('guest')     # => true
 ```
 
 ### DSL Configuration
@@ -303,6 +380,13 @@ boolean_feature :premium_feature,
 
 # Add dependencies after feature definition
 add_dependency(:another_feature, :required_feature)
+
+# Exclusions - block specific users/groups/roles/tags
+exclude_user :new_dashboard, 'user_123'
+exclude_tag :new_dashboard, 'legacy_tier'
+exclude_group :new_dashboard, 'banned_users'
+exclude_role :new_dashboard, 'suspended'
+exclude_ip_addresses :new_dashboard, '10.0.0.0/8'
 ```
 
 ### In Controllers
@@ -443,8 +527,8 @@ end
 
 Magick uses a dual-adapter strategy:
 
-1. **Memory Adapter**: Fast, in-memory storage with TTL support
-2. **Redis Adapter**: Persistent storage for distributed systems (optional)
+1. **Memory Adapter**: Fast, in-memory storage with TTL support and JSON serialization
+2. **Redis Adapter**: Persistent storage for distributed systems (optional), uses SCAN instead of KEYS and pipelined bulk operations
 
 The registry automatically falls back from memory to Redis if a feature isn't found in memory. When features are updated:
 - Both adapters are updated simultaneously
@@ -589,6 +673,7 @@ Once mounted, visit `/magick` in your browser to access the Admin UI.
   - **Role Targeting**: Select roles from a configured list (checkboxes)
   - **Tag Targeting**: Select tags from a dynamically loaded list (checkboxes)
   - **User Targeting**: Enter user IDs (comma-separated)
+  - **Exclusions**: Exclude users, roles, and tags from a feature (exclusions override inclusions)
   - **Visual Display**: See all active targeting rules with badges
 - **Edit Features**: Update feature values (boolean, string, number) directly from the UI
 - **Statistics**: View performance metrics and usage statistics for each feature
@@ -641,7 +726,12 @@ The Admin UI provides a comprehensive targeting interface:
    - Add or remove users dynamically
    - Clear all user targeting by leaving the field empty
 
-4. **Visual Feedback**:
+4. **Exclusion Targeting**:
+   - Exclude specific users (comma-separated IDs), roles, and tags
+   - Exclusions always take priority over inclusions
+   - Managed through the same targeting form
+
+5. **Visual Feedback**:
    - All targeting rules are displayed as badges in the feature details view
    - Easy to see which roles/tags/users have access to each feature
 
@@ -663,7 +753,27 @@ The Admin UI provides the following routes:
 
 **Security:**
 
-The Admin UI is a basic Rails Engine without built-in authentication. **You should add authentication/authorization** before mounting it in production. For example:
+The Admin UI includes a built-in authentication hook via `require_role`. Configure it to gate access:
+
+```ruby
+# config/initializers/magick.rb
+Rails.application.config.after_initialize do
+  Magick::AdminUI.configure do |config|
+    # Option 1: Lambda-based authentication (recommended)
+    config.require_role = ->(controller) {
+      # Return true to allow, false to deny (returns 403 Forbidden)
+      controller.current_user&.admin?
+    }
+
+    # Option 2: Check for a specific role
+    config.require_role = ->(controller) {
+      controller.current_user&.role == 'admin'
+    }
+  end
+end
+```
+
+You can also gate access at the routing level:
 
 ```ruby
 # config/routes.rb
@@ -679,8 +789,6 @@ Rails.application.routes.draw do
   end
 end
 ```
-
-Or use a before_action in your ApplicationController if you mount it at the application level.
 
 **Note:** The Admin UI is optional and only loaded when explicitly enabled in configuration. It requires Rails to be available.
 

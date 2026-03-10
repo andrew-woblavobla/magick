@@ -208,6 +208,49 @@ module Magick
           @feature.disable_percentage_of_requests if current_targeting[:percentage_requests]
         end
 
+        # Handle excluded user IDs
+        if targeting_params[:excluded_user_ids].present?
+          excluded_user_ids = targeting_params[:excluded_user_ids].split(',').map(&:strip).reject(&:blank?)
+          current_excluded_users = current_targeting[:excluded_users].is_a?(Array) ? current_targeting[:excluded_users] : (current_targeting[:excluded_users] ? [current_targeting[:excluded_users]] : [])
+
+          (current_excluded_users - excluded_user_ids).each do |user_id|
+            @feature.remove_user_exclusion(user_id) if user_id.present?
+          end
+
+          (excluded_user_ids - current_excluded_users).each do |user_id|
+            @feature.exclude_user(user_id) if user_id.present?
+          end
+        elsif targeting_params.key?(:excluded_user_ids) && targeting_params[:excluded_user_ids].blank?
+          current_excluded_users = current_targeting[:excluded_users].is_a?(Array) ? current_targeting[:excluded_users] : (current_targeting[:excluded_users] ? [current_targeting[:excluded_users]] : [])
+          current_excluded_users.each do |user_id|
+            @feature.remove_user_exclusion(user_id) if user_id.present?
+          end
+        end
+
+        # Handle excluded roles
+        current_excluded_roles = current_targeting[:excluded_roles].is_a?(Array) ? current_targeting[:excluded_roles] : (current_targeting[:excluded_roles] ? [current_targeting[:excluded_roles]] : [])
+        selected_excluded_roles = Array(targeting_params[:excluded_roles]).reject(&:blank?)
+
+        (current_excluded_roles - selected_excluded_roles).each do |role|
+          @feature.remove_role_exclusion(role) if role.present?
+        end
+
+        (selected_excluded_roles - current_excluded_roles).each do |role|
+          @feature.exclude_role(role) if role.present?
+        end
+
+        # Handle excluded tags
+        current_excluded_tags = current_targeting[:excluded_tags].is_a?(Array) ? current_targeting[:excluded_tags] : (current_targeting[:excluded_tags] ? [current_targeting[:excluded_tags]] : [])
+        selected_excluded_tags = Array(targeting_params[:excluded_tags]).reject(&:blank?)
+
+        (current_excluded_tags - selected_excluded_tags).each do |tag|
+          @feature.remove_tag_exclusion(tag) if tag.present?
+        end
+
+        (selected_excluded_tags - current_excluded_tags).each do |tag|
+          @feature.exclude_tag(tag) if tag.present?
+        end
+
         # After all targeting updates, ensure we're using the registered feature instance
         # and reload it to get the latest state from adapter
         feature_name = @feature.name.to_s

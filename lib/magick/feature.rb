@@ -109,6 +109,9 @@ module Magick
 
       # Fast path: skip targeting checks if targeting is empty (most common case)
       unless @_targeting_empty
+        # Check exclusions FIRST — exclusions always take priority over inclusions
+        return false if excluded?(context)
+
         # Check date/time range targeting
         return false if targeting[:date_range] && !date_range_active?(targeting[:date_range])
 
@@ -261,6 +264,58 @@ module Magick
 
     def disable_for_tag(tag_name)
       disable_targeting(:tag, tag_name)
+      true
+    end
+
+    # --- Exclusion methods ---
+
+    def exclude_user(user_id)
+      enable_targeting(:excluded_users, user_id)
+      true
+    end
+
+    def remove_user_exclusion(user_id)
+      disable_targeting(:excluded_users, user_id)
+      true
+    end
+
+    def exclude_tag(tag_name)
+      enable_targeting(:excluded_tags, tag_name)
+      true
+    end
+
+    def remove_tag_exclusion(tag_name)
+      disable_targeting(:excluded_tags, tag_name)
+      true
+    end
+
+    def exclude_group(group_name)
+      enable_targeting(:excluded_groups, group_name)
+      true
+    end
+
+    def remove_group_exclusion(group_name)
+      disable_targeting(:excluded_groups, group_name)
+      true
+    end
+
+    def exclude_role(role_name)
+      enable_targeting(:excluded_roles, role_name)
+      true
+    end
+
+    def remove_role_exclusion(role_name)
+      disable_targeting(:excluded_roles, role_name)
+      true
+    end
+
+    def exclude_ip_addresses(ip_addresses)
+      enable_targeting(:excluded_ip_addresses, Array(ip_addresses))
+      true
+    end
+
+    def remove_ip_exclusion
+      disable_targeting(:excluded_ip_addresses)
       true
     end
 
@@ -719,6 +774,10 @@ module Magick
       # Normalize targeting keys (handle both string and symbol keys)
       target = targeting.transform_keys(&:to_sym)
 
+      # If only exclusion keys exist (no inclusion targeting), treat as globally enabled
+      inclusion_keys = target.keys.reject { |k| k.to_s.start_with?('excluded_') }
+      return true if inclusion_keys.empty?
+
       # Check user targeting
       if context[:user_id] && target[:user]
         user_list = target[:user].is_a?(Array) ? target[:user] : [target[:user]]
@@ -963,9 +1022,52 @@ module Magick
       dependent_features
     end
 
+    def excluded?(context)
+      target = targeting.transform_keys(&:to_sym)
+
+      # Check excluded users
+      if context[:user_id] && target[:excluded_users]
+        excluded_list = target[:excluded_users].is_a?(Array) ? target[:excluded_users] : [target[:excluded_users]]
+        return true if excluded_list.include?(context[:user_id].to_s)
+      end
+
+      # Check excluded groups
+      if context[:group] && target[:excluded_groups]
+        excluded_list = target[:excluded_groups].is_a?(Array) ? target[:excluded_groups] : [target[:excluded_groups]]
+        return true if excluded_list.include?(context[:group].to_s)
+      end
+
+      # Check excluded roles
+      if context[:role] && target[:excluded_roles]
+        excluded_list = target[:excluded_roles].is_a?(Array) ? target[:excluded_roles] : [target[:excluded_roles]]
+        return true if excluded_list.include?(context[:role].to_s)
+      end
+
+      # Check excluded tags
+      if context[:tags] && target[:excluded_tags]
+        context_tags = Array(context[:tags]).map(&:to_s)
+        excluded_tags = target[:excluded_tags].is_a?(Array) ? target[:excluded_tags].map(&:to_s) : [target[:excluded_tags].to_s]
+        return true if (context_tags & excluded_tags).any?
+      end
+
+      # Check excluded IP addresses
+      if context[:ip_address] && target[:excluded_ip_addresses]
+        begin
+          require 'ipaddr'
+          excluded_ips = Array(target[:excluded_ip_addresses])
+          client_ip = IPAddr.new(context[:ip_address])
+          return true if excluded_ips.any? { |ip_str| IPAddr.new(ip_str).include?(client_ip) }
+        rescue IPAddr::InvalidAddressError, ArgumentError
+          # Invalid IP, not excluded
+        end
+      end
+
+      false
+    end
+
     def enable_targeting(type, value)
       case type
-      when :date_range, :custom_attributes, :complex_conditions, :variants
+      when :date_range, :custom_attributes, :complex_conditions, :variants, :excluded_ip_addresses
         # These types store structured data directly (Hash or Array of Hashes)
         @targeting[type] = value
       when :percentage_users, :percentage_requests
