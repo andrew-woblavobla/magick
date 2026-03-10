@@ -7,6 +7,10 @@ module Magick
         @attribute_name = attribute_name.to_sym
         @values = Array(values)
         @operator = operator.to_sym
+
+        if %i[greater_than gt less_than lt].include?(@operator) && @values.empty?
+          raise ArgumentError, "#{@operator} operator requires at least one value"
+        end
       end
 
       def matches?(context)

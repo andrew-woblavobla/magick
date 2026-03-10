@@ -5,6 +5,10 @@ module Magick
     class ActiveRecord < Base
       def initialize(model_class: nil)
         @model_class = model_class || default_model_class
+        # Cache AR version check once at init time (hot path optimization)
+        ar_major = ::ActiveRecord::VERSION::MAJOR
+        ar_minor = ::ActiveRecord::VERSION::MINOR
+        @use_json = ar_major >= 8 || (ar_major == 7 && ar_minor >= 1)
         # Verify table exists - raise clear error if it doesn't
         unless @model_class.table_exists?
           raise AdapterError, "Table 'magick_features' does not exist. Please run: rails generate magick:active_record && rails db:migrate"
@@ -30,20 +34,18 @@ module Magick
         feature_name_str = feature_name.to_s
         retries = 5
         begin
-          record = @model_class.find_or_initialize_by(feature_name: feature_name_str)
-          # Ensure data is a Hash (works for both serialize and attribute :json)
-          data = record.data || {}
-          data = {} unless data.is_a?(Hash)
-          data[key.to_s] = serialize_value(value)
-          record.data = data
-          # Use Time.now if Time.current is not available (for non-Rails environments)
-          record.updated_at = defined?(Time.current) ? Time.current : Time.now
-          record.save!
+          @model_class.transaction do
+            record = @model_class.lock.find_or_create_by!(feature_name: feature_name_str)
+            data = record.data || {}
+            data = {} unless data.is_a?(Hash)
+            data[key.to_s] = serialize_value(value)
+            record.update!(data: data, updated_at: defined?(Time.current) ? Time.current : Time.now)
+          end
         rescue ::ActiveRecord::StatementInvalid, ::ActiveRecord::ConnectionTimeoutError => e
-          # SQLite busy/locked errors - retry with exponential backoff
+          # SQLite busy/locked errors - retry with linear backoff
           if (e.message.include?('database is locked') || e.message.include?('busy') || e.message.include?('timeout')) && retries > 0
             retries -= 1
-            sleep(0.01 * (6 - retries)) # Exponential backoff: 0.01, 0.02, 0.03, 0.04, 0.05
+            sleep(0.01 * (6 - retries))
             retry
           end
           raise AdapterError, "Failed to set in ActiveRecord: #{e.message}"
@@ -97,9 +99,8 @@ module Magick
       end
 
       def load_all_features_data
-        records = @model_class.all
         result = {}
-        records.each do |record|
+        @model_class.find_each do |record|
           data = record.data || {}
           next unless data.is_a?(Hash)
 
@@ -118,15 +119,15 @@ module Magick
         feature_name_str = feature_name.to_s
         retries = 5
         begin
-          record = @model_class.find_or_initialize_by(feature_name: feature_name_str)
-          existing_data = record.data || {}
-          existing_data = {} unless existing_data.is_a?(Hash)
-          data_hash.each do |key, value|
-            existing_data[key.to_s] = serialize_value(value)
+          @model_class.transaction do
+            record = @model_class.lock.find_or_create_by!(feature_name: feature_name_str)
+            existing_data = record.data || {}
+            existing_data = {} unless existing_data.is_a?(Hash)
+            data_hash.each do |key, value|
+              existing_data[key.to_s] = serialize_value(value)
+            end
+            record.update!(data: existing_data, updated_at: defined?(Time.current) ? Time.current : Time.now)
           end
-          record.data = existing_data
-          record.updated_at = defined?(Time.current) ? Time.current : Time.now
-          record.save!
         rescue ::ActiveRecord::StatementInvalid, ::ActiveRecord::ConnectionTimeoutError => e
           if (e.message.include?('database is locked') || e.message.include?('busy') || e.message.include?('timeout')) && retries > 0
             retries -= 1
@@ -176,19 +177,13 @@ module Magick
       end
 
       def serialize_value(value)
-        # For ActiveRecord 8.1+ with attribute :json, we can store booleans as-is
-        # For older versions with serialize, we convert to strings
-        ar_major = ::ActiveRecord::VERSION::MAJOR
-        ar_minor = ::ActiveRecord::VERSION::MINOR
-        use_json = ar_major >= 8 || (ar_major == 7 && ar_minor >= 1)
-
         case value
         when Hash, Array
           value
         when true
-          use_json ? true : 'true'
+          @use_json ? true : 'true'
         when false
-          use_json ? false : 'false'
+          @use_json ? false : 'false'
         else
           value
         end

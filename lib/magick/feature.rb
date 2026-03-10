@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'digest'
+require 'time'
 require_relative '../magick/feature_variant'
 
 module Magick
@@ -89,16 +90,17 @@ module Magick
     end
 
     def check_enabled(context = {})
+      # Dup context to avoid mutating the caller's hash
+      context = context.dup
+
       # Extract context from user object if provided
       # This allows Magick.enabled?(:feature, user: player) to work
       if context[:user]
-        extracted = extract_context_from_object(context[:user])
+        extracted = extract_context_from_object(context.delete(:user))
         # Merge extracted context, but don't override explicit values already in context
         extracted.each do |key, value|
           context[key] = value unless context.key?(key)
         end
-        # Remove :user key after extraction to avoid confusion
-        context.delete(:user)
       end
 
       # Fast path: check status first
@@ -780,7 +782,7 @@ module Magick
       ip_list.any? do |ip_str|
         IPAddr.new(ip_str).include?(client_ip)
       end
-    rescue IPAddr::InvalidAddressError
+    rescue IPAddr::InvalidAddressError, ArgumentError
       false
     end
 
@@ -819,8 +821,7 @@ module Magick
       conditions = complex_config[:conditions] || complex_config['conditions'] || []
       operator = (complex_config[:operator] || complex_config['operator'] || :and).to_sym
 
-      results = conditions.map do |condition|
-        # Each condition is a hash with type and params
+      evaluate_condition = lambda do |condition|
         condition_type = (condition[:type] || condition['type']).to_sym
         condition_params = condition[:params] || condition['params'] || {}
 
@@ -845,9 +846,9 @@ module Magick
 
       case operator
       when :and, :all
-        results.all?
+        conditions.all?(&evaluate_condition)
       when :or, :any
-        results.any?
+        conditions.any?(&evaluate_condition)
       else
         false
       end
@@ -963,8 +964,19 @@ module Magick
     end
 
     def enable_targeting(type, value)
-      @targeting[type] ||= []
-      @targeting[type] << value.to_s unless @targeting[type].include?(value.to_s)
+      case type
+      when :date_range, :custom_attributes, :complex_conditions, :variants
+        # These types store structured data directly (Hash or Array of Hashes)
+        @targeting[type] = value
+      when :percentage_users, :percentage_requests
+        # Numeric types store a single value
+        @targeting[type] = value.to_f
+      else
+        # Array-based types (user, group, role, tag, ip_address)
+        @targeting[type] ||= []
+        str_value = value.to_s
+        @targeting[type] << str_value unless @targeting[type].include?(str_value)
+      end
       save_targeting
 
       # Rails 8+ event

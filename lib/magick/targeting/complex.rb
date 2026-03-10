@@ -11,13 +11,11 @@ module Magick
       def matches?(context)
         return false if @conditions.empty?
 
-        results = @conditions.map { |condition| condition.matches?(context) }
-
         case @operator
         when :and, :all
-          results.all?
+          @conditions.all? { |condition| condition.matches?(context) }
         when :or, :any
-          results.any?
+          @conditions.any? { |condition| condition.matches?(context) }
         else
           false
         end

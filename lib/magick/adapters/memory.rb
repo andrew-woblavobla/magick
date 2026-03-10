@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'json'
+
 module Magick
   module Adapters
     class Memory < Base
@@ -134,7 +136,7 @@ module Magick
       def serialize_value(value)
         case value
         when Hash, Array
-          Marshal.dump(value)
+          JSON.generate(value)
         else
           value
         end
@@ -145,10 +147,14 @@ module Magick
 
         case value
         when String
-          # Try to unmarshal if it's a serialized hash/array
-          begin
-            Marshal.load(value)
-          rescue StandardError
+          # Only attempt JSON parse on strings that look like JSON objects/arrays
+          if value.start_with?('{', '[')
+            begin
+              JSON.parse(value)
+            rescue JSON::ParserError
+              value
+            end
+          else
             value
           end
         else

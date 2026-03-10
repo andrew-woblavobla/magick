@@ -75,7 +75,7 @@ module Magick
 
       # Rails 8+ event
       if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
-        Magick::Rails::Events.imported(format: format, feature_count: features.length)
+        Magick::Rails::Events.imported(format: :json, feature_count: features.length)
       end
 
       features

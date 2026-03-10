@@ -266,7 +266,7 @@ module Magick
       def redis_client
         return nil unless redis_adapter
 
-        redis_adapter.instance_variable_get(:@redis)
+        redis_adapter.client
       end
 
       # Publish cache invalidation message to Redis Pub/Sub (without deleting local memory cache)
@@ -276,7 +276,7 @@ module Magick
         return unless redis_adapter
 
         begin
-          redis_client = redis_adapter.instance_variable_get(:@redis)
+          redis_client = redis_adapter.client
           redis_client&.publish(CACHE_INVALIDATION_CHANNEL, feature_name.to_s)
         rescue StandardError => e
           # Silently fail - cache invalidation is best effort
@@ -299,6 +299,9 @@ module Magick
       # Check if a feature was recently written by this process
       def local_write?(feature_name_str)
         @reload_mutex.synchronize do
+          # Periodic cleanup of stale entries to prevent unbounded growth
+          cleanup_stale_tracking_entries
+
           wrote_at = @local_writes[feature_name_str]
           return false unless wrote_at
 
@@ -311,6 +314,16 @@ module Magick
         end
       end
 
+      # Clean up stale entries from tracking hashes (called under mutex)
+      def cleanup_stale_tracking_entries
+        now = Time.now.to_f
+        return if @last_tracking_cleanup && (now - @last_tracking_cleanup) < 60.0
+
+        @last_tracking_cleanup = now
+        @local_writes.delete_if { |_, wrote_at| (now - wrote_at) >= LOCAL_WRITE_TTL }
+        @last_reload_times.delete_if { |_, reload_at| (now - reload_at) >= 10.0 }
+      end
+
       # Start a background thread to listen for cache invalidation messages
       def start_cache_invalidation_subscriber
         return unless redis_adapter && defined?(Thread)
@@ -320,7 +333,7 @@ module Magick
         return if defined?(Rails) && Rails.env.test?
 
         @subscriber_thread = Thread.new do
-          redis_client = redis_adapter.instance_variable_get(:@redis)
+          redis_client = redis_adapter.client
           return unless redis_client
 
           begin

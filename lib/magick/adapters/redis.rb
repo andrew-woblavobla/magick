@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'json'
+
 module Magick
   module Adapters
     class Redis < Base
@@ -37,8 +39,7 @@ module Magick
       end
 
       def all_features
-        pattern = "#{namespace}:*"
-        keys = redis.keys(pattern)
+        keys = scan_keys
         keys.map { |key| key.sub("#{namespace}:", '') }
       rescue StandardError => e
         raise AdapterError, "Failed to get all features from Redis: #{e.message}"
@@ -56,14 +57,18 @@ module Magick
       end
 
       def load_all_features_data
-        pattern = "#{namespace}:*"
-        keys = redis.keys(pattern)
+        keys = scan_keys
         return {} if keys.empty?
 
+        # Pipeline all HGETALL calls to avoid N+1 round-trips
+        raw_results = redis.pipelined do |pipeline|
+          keys.each { |key| pipeline.hgetall(key) }
+        end
+
         result = {}
-        keys.each do |key|
+        keys.each_with_index do |key, idx|
           feature_name = key.sub("#{namespace}:", '')
-          raw = redis.hgetall(key)
+          raw = raw_results[idx]
           next if raw.nil? || raw.empty?
 
           feature_data = {}
@@ -89,9 +94,27 @@ module Magick
         raise AdapterError, "Failed to set all data in Redis: #{e.message}"
       end
 
+      # Public accessor for the underlying Redis client
+      def client
+        @redis
+      end
+
       private
 
       attr_reader :redis, :namespace
+
+      # Use SCAN instead of KEYS to avoid blocking Redis
+      def scan_keys
+        pattern = "#{namespace}:*"
+        keys = []
+        cursor = '0'
+        loop do
+          cursor, batch = redis.scan(cursor, match: pattern, count: 100)
+          keys.concat(batch)
+          break if cursor == '0'
+        end
+        keys
+      end
 
       def key_for(feature_name)
         "#{namespace}:#{feature_name}"
@@ -109,7 +132,7 @@ module Magick
       def serialize_value(value)
         case value
         when Hash, Array
-          Marshal.dump(value)
+          JSON.generate(value)
         when true
           'true'
         when false
@@ -122,17 +145,16 @@ module Magick
       def deserialize_value(value)
         return nil if value.nil?
 
-        # Try to unmarshal if it's a serialized hash/array
-        if value.is_a?(String) && value.start_with?("\x04\x08")
-          begin
-            Marshal.load(value)
-          rescue StandardError
-            value
-          end
-        elsif value == 'true'
+        if value == 'true'
           true
         elsif value == 'false'
           false
+        elsif value.is_a?(String) && value.start_with?('{', '[')
+          begin
+            JSON.parse(value)
+          rescue JSON::ParserError
+            value
+          end
         else
           value
         end

@@ -14,7 +14,7 @@ module Magick
 
         client_ip = IPAddr.new(context[:ip_address])
         @ip_addresses.any? { |ip| ip.include?(client_ip) }
-      rescue IPAddr::InvalidAddressError
+      rescue IPAddr::InvalidAddressError, ArgumentError
         false
       end
     end

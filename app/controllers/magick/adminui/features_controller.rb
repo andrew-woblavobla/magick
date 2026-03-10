@@ -6,6 +6,7 @@ module Magick
       # Include route helpers so views can use magick_admin_ui.* helpers
       include Magick::AdminUI::Engine.routes.url_helpers
       layout 'application'
+      before_action :authenticate_admin!
       before_action :set_feature, only: %i[show edit update enable disable enable_for_user enable_for_role disable_for_role update_targeting]
 
       # Make route helpers available in views via magick_admin_ui helper
@@ -224,6 +225,18 @@ module Magick
       end
 
       private
+
+      def authenticate_admin!
+        return unless Magick::AdminUI.config.require_role
+
+        auth_callback = Magick::AdminUI.config.require_role
+        if auth_callback.respond_to?(:call)
+          unless auth_callback.call(self)
+            head :forbidden
+            nil
+          end
+        end
+      end
 
       def set_feature
         feature_name = params[:id].to_s
