@@ -1,67 +1,90 @@
+<div class="breadcrumb">
+  <a href="<%= magick_admin_ui.features_path %>">Features</a>
+  <span class="breadcrumb-sep">/</span>
+  <a href="<%= magick_admin_ui.feature_path(@feature.name) %>"><%= @feature.display_name || @feature.name %></a>
+  <span class="breadcrumb-sep">/</span>
+  <span class="breadcrumb-current">Edit</span>
+</div>
+
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; flex-wrap: wrap; gap: 12px;">
+  <h1 class="page-title">Edit Feature</h1>
+  <a href="<%= magick_admin_ui.feature_path(@feature.name) %>" class="btn btn-secondary btn-sm">Cancel</a>
+</div>
+
 <div class="card">
   <div class="card-header">
-    <h2>Edit Feature: <%= @feature.display_name || @feature.name %></h2>
-    <div class="btn-group">
-      <a href="<%= magick_admin_ui.feature_path(@feature.name) %>" class="btn btn-secondary btn-sm">← Back</a>
-    </div>
+    <h2>Feature Settings</h2>
   </div>
-
-  <%= form_with url: magick_admin_ui.feature_path(@feature.name), method: :put, local: true do |f| %>
-    <div class="form-group">
-      <label>Feature Name</label>
-      <input type="text" value="<%= @feature.name %>" disabled>
-      <small style="color: #999;">Feature name cannot be changed</small>
-    </div>
-
-    <div class="form-group">
-      <label>Type</label>
-      <input type="text" value="<%= @feature.type.to_s.capitalize %>" disabled>
-    </div>
-
-    <div class="form-group">
-      <label>Group</label>
-      <%= text_field_tag 'group', @feature.group, placeholder: 'e.g., Authentication, Payment, UI', class: 'form-control' %>
-      <small style="color: #999;">Optional: Group features together for easier organization and filtering</small>
-    </div>
-
-    <div class="form-group">
-      <label>Current Value</label>
-      <% if @feature.type == :boolean %>
-        <div>
-          <label style="display: inline-flex; align-items: center; cursor: pointer;">
-            <%= check_box_tag 'value', 'true', @feature.enabled?, id: 'feature_value' %>
-            <span style="margin-left: 8px;">Enabled</span>
-          </label>
+  <div class="card-body">
+    <%= form_with url: magick_admin_ui.feature_path(@feature.name), method: :put, local: true do |f| %>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+        <div class="form-group" style="margin-bottom: 0;">
+          <label class="form-label">Feature Key</label>
+          <input type="text" value="<%= @feature.name %>" disabled>
+          <p class="form-hint">Cannot be changed after creation</p>
         </div>
-        <%= hidden_field_tag 'value', 'false' %>
-        <small style="color: #999;">Check to enable, uncheck to disable</small>
-      <% elsif @feature.type == :string %>
-        <%= text_field_tag 'value', @feature.get_value, class: 'form-control' %>
-      <% elsif @feature.type == :number %>
-        <%= number_field_tag 'value', @feature.get_value, class: 'form-control' %>
-      <% end %>
-    </div>
 
-    <div class="form-group">
-      <div class="btn-group">
-        <%= submit_tag 'Update Feature', class: 'btn btn-primary btn-sm' %>
-        <a href="<%= magick_admin_ui.feature_path(@feature.name) %>" class="btn btn-secondary btn-sm">Cancel</a>
+        <div class="form-group" style="margin-bottom: 0;">
+          <label class="form-label">Type</label>
+          <input type="text" value="<%= @feature.type.to_s.capitalize %>" disabled>
+        </div>
       </div>
-    </div>
-  <% end %>
 
-  <% if @feature.type == :boolean %>
-    <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e0e0e0;">
-      <h3 style="margin-bottom: 16px;">Quick Actions</h3>
+      <div style="margin-top: 20px;"></div>
+
+      <div class="form-group">
+        <label class="form-label">Group</label>
+        <%= text_field_tag 'group', @feature.group, placeholder: 'e.g., Authentication, Payment, UI', class: 'form-control' %>
+        <p class="form-hint">Organize features into groups for easier filtering</p>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Value</label>
+        <% if @feature.type == :boolean %>
+          <label class="toggle-switch">
+            <%= check_box_tag 'value', 'true', @feature.enabled?, id: 'feature_value' %>
+            <span class="toggle-track"></span>
+            <span class="toggle-label-text"><%= @feature.enabled? ? 'Enabled' : 'Disabled' %></span>
+          </label>
+          <%= hidden_field_tag 'value', 'false' %>
+          <p class="form-hint">Toggle to enable or disable this feature globally</p>
+        <% elsif @feature.type == :string %>
+          <%= text_field_tag 'value', @feature.get_value, class: 'form-control' %>
+        <% elsif @feature.type == :number %>
+          <%= number_field_tag 'value', @feature.get_value, class: 'form-control' %>
+        <% end %>
+      </div>
+
+      <div style="padding-top: 20px; border-top: 1px solid var(--color-border);">
+        <div class="btn-group">
+          <%= submit_tag 'Save Changes', class: 'btn btn-primary' %>
+          <a href="<%= magick_admin_ui.feature_path(@feature.name) %>" class="btn btn-secondary">Cancel</a>
+        </div>
+      </div>
+    <% end %>
+  </div>
+</div>
+
+<% if @feature.type == :boolean %>
+  <div class="card">
+    <div class="card-header">
+      <h2>Quick Actions</h2>
+    </div>
+    <div class="card-body">
+      <p style="font-size: 13px; color: var(--color-text-secondary); margin-bottom: 16px;">Override value and clear targeting rules</p>
       <div class="btn-group">
         <%= button_to 'Enable Globally', magick_admin_ui.enable_feature_path(@feature.name), method: :put, class: 'btn btn-success btn-sm' %>
         <%= button_to 'Disable Globally', magick_admin_ui.disable_feature_path(@feature.name), method: :put, class: 'btn btn-danger btn-sm' %>
       </div>
     </div>
-  <% end %>
+  </div>
+<% end %>
 
-  <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #e0e0e0;">
-    <h3 style="margin-bottom: 16px;">Targeting Rules</h3>
+<div class="card">
+  <div class="card-header">
+    <h2>Targeting Rules</h2>
+  </div>
+  <div class="card-body">
     <%= form_with url: magick_admin_ui.update_targeting_feature_path(@feature.name), method: :put, local: true do |f| %>
       <% targeting = @feature.instance_variable_get(:@targeting) || {} %>
       <% current_roles = targeting[:role].is_a?(Array) ? targeting[:role] : (targeting[:role] ? [targeting[:role]] : []) %>
@@ -69,15 +92,14 @@
 
       <% if roles_list.any? %>
         <div class="form-group">
-          <label>Enable for Roles</label>
+          <label class="form-label">Roles</label>
           <div class="tags-search-container">
-            <input type="text" id="roles_search" class="tags-search-input" placeholder="Search roles... (e.g., admin, manager)" autocomplete="off">
+            <input type="text" id="roles_search" class="tags-search-input" placeholder="Search roles..." autocomplete="off">
             <div class="tags-count" id="roles_count">
-              <span id="roles_visible_count"><%= roles_list.length %></span> of <span id="roles_total_count"><%= roles_list.length %></span> roles
+              <span id="roles_visible_count"><%= roles_list.length %></span> of <span id="roles_total_count"><%= roles_list.length %></span>
             </div>
           </div>
           <div class="tags-checkbox-container" id="roles_checkbox_container">
-            <%# Render checked roles first, then unchecked %>
             <% checked_roles, unchecked_roles = roles_list.partition { |role| current_roles.include?(role.to_s) } %>
             <% (checked_roles + unchecked_roles).each do |role| %>
               <% role_name = role.to_s %>
@@ -89,7 +111,7 @@
               </label>
             <% end %>
           </div>
-          <small style="color: #999;">Select roles that should have access to this feature</small>
+          <p class="form-hint">Select roles that should have access to this feature</p>
         </div>
       <% else %>
         <div class="alert alert-info">
@@ -102,15 +124,14 @@
       <% tags_list = available_tags %>
       <% if tags_list.any? %>
         <div class="form-group">
-          <label>Enable for Tags</label>
+          <label class="form-label">Tags</label>
           <div class="tags-search-container">
-            <input type="text" id="tags_search" class="tags-search-input" placeholder="Search tags... (e.g., test, MONITOR)" autocomplete="off">
+            <input type="text" id="tags_search" class="tags-search-input" placeholder="Search tags..." autocomplete="off">
             <div class="tags-count" id="tags_count">
-              <span id="tags_visible_count"><%= tags_list.length %></span> of <span id="tags_total_count"><%= tags_list.length %></span> tags
+              <span id="tags_visible_count"><%= tags_list.length %></span> of <span id="tags_total_count"><%= tags_list.length %></span>
             </div>
           </div>
           <div class="tags-checkbox-container" id="tags_checkbox_container">
-            <%# Render checked tags first, then unchecked %>
             <% checked_tags, unchecked_tags = tags_list.partition do |tag|
                  tag_id = tag.respond_to?(:id) ? tag.id.to_s : tag.to_s
                  current_tags.include?(tag_id.to_s)
@@ -125,7 +146,7 @@
               </label>
             <% end %>
           </div>
-          <small style="color: #999;">Select tags that should have access to this feature. Tags are loaded dynamically from your configuration.</small>
+          <p class="form-hint">Select tags that should have access to this feature</p>
         </div>
       <% else %>
         <div class="alert alert-info">
@@ -135,7 +156,7 @@
       <% end %>
 
       <div class="form-group">
-        <label>Enable for User IDs</label>
+        <label class="form-label">User IDs</label>
         <div class="user-ids-input-container">
           <div class="user-ids-tags" id="user_ids_tags">
             <% current_user_ids = targeting[:user].is_a?(Array) ? targeting[:user] : (targeting[:user] ? [targeting[:user]] : []) %>
@@ -149,27 +170,109 @@
           <input type="text" id="user_ids_input" class="form-control user-ids-input" placeholder="Type user ID and press Enter" autocomplete="off">
           <%= hidden_field_tag 'targeting[user_ids]', current_user_ids.join(','), id: 'user_ids_hidden' %>
         </div>
-        <small style="color: #999;">Type a user ID and press Enter to add. Click × to remove.</small>
+        <p class="form-hint">Type a user ID and press Enter to add. Supports comma-separated values.</p>
       </div>
 
-      <div class="form-group">
-        <label>Percentage of Users</label>
-        <% current_percentage_users = targeting[:percentage_users] || '' %>
-        <%= number_field_tag 'targeting[percentage_users]', current_percentage_users, min: 0, max: 100, step: 0.1, placeholder: '0-100', class: 'form-control' %>
-        <small style="color: #999;">Enable for a consistent percentage of users (0-100). Leave empty to disable.</small>
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+        <div class="form-group" style="margin-bottom: 0;">
+          <label class="form-label">Percentage of Users</label>
+          <% current_percentage_users = targeting[:percentage_users] || '' %>
+          <%= number_field_tag 'targeting[percentage_users]', current_percentage_users, min: 0, max: 100, step: 0.1, placeholder: '0-100', class: 'form-control' %>
+          <p class="form-hint">Consistent user-based rollout (0-100)</p>
+        </div>
+
+        <div class="form-group" style="margin-bottom: 0;">
+          <label class="form-label">Percentage of Requests</label>
+          <% current_percentage_requests = targeting[:percentage_requests] || '' %>
+          <%= number_field_tag 'targeting[percentage_requests]', current_percentage_requests, min: 0, max: 100, step: 0.1, placeholder: '0-100', class: 'form-control' %>
+          <p class="form-hint">Random request-based sampling (0-100)</p>
+        </div>
       </div>
 
-      <div class="form-group">
-        <label>Percentage of Requests</label>
-        <% current_percentage_requests = targeting[:percentage_requests] || '' %>
-        <%= number_field_tag 'targeting[percentage_requests]', current_percentage_requests, min: 0, max: 100, step: 0.1, placeholder: '0-100', class: 'form-control' %>
-        <small style="color: #999;">Enable for a random percentage of requests (0-100). Leave empty to disable.</small>
+      <hr class="section-divider">
+
+      <div class="exclusion-border">
+        <h3 class="section-title section-title-danger">Exclusions</h3>
+        <p style="font-size: 13px; color: var(--color-text-secondary); margin-bottom: 20px;">Exclusions override all inclusion rules. Users matching any exclusion will be denied access.</p>
+
+        <% current_excluded_user_ids = targeting[:excluded_users].is_a?(Array) ? targeting[:excluded_users] : (targeting[:excluded_users] ? [targeting[:excluded_users]] : []) %>
+        <div class="form-group">
+          <label class="form-label">Excluded User IDs</label>
+          <div class="user-ids-input-container">
+            <div class="user-ids-tags" id="excluded_user_ids_tags">
+              <% current_excluded_user_ids.each do |user_id| %>
+                <span class="user-id-tag excluded">
+                  <%= user_id %>
+                  <span class="tag-remove" data-user-id="<%= user_id %>">×</span>
+                </span>
+              <% end %>
+            </div>
+            <input type="text" id="excluded_user_ids_input" class="form-control user-ids-input" placeholder="Type user ID and press Enter" autocomplete="off">
+            <%= hidden_field_tag 'targeting[excluded_user_ids]', current_excluded_user_ids.join(','), id: 'excluded_user_ids_hidden' %>
+          </div>
+          <p class="form-hint">These users will be blocked even if they match inclusion rules.</p>
+        </div>
+
+        <% if roles_list.any? %>
+          <% current_excluded_roles = targeting[:excluded_roles].is_a?(Array) ? targeting[:excluded_roles] : (targeting[:excluded_roles] ? [targeting[:excluded_roles]] : []) %>
+          <div class="form-group">
+            <label class="form-label">Excluded Roles</label>
+            <div class="tags-search-container">
+              <input type="text" id="excluded_roles_search" class="tags-search-input" placeholder="Search roles to exclude..." autocomplete="off">
+              <div class="tags-count" id="excluded_roles_count">
+                <span id="excluded_roles_visible_count"><%= roles_list.length %></span> of <span id="excluded_roles_total_count"><%= roles_list.length %></span>
+              </div>
+            </div>
+            <div class="tags-checkbox-container" id="excluded_roles_checkbox_container">
+              <% checked_excluded_roles, unchecked_excluded_roles = roles_list.partition { |role| current_excluded_roles.include?(role.to_s) } %>
+              <% (checked_excluded_roles + unchecked_excluded_roles).each do |role| %>
+                <% role_name = role.to_s %>
+                <% role_display = role.to_s.humanize %>
+                <% is_checked = current_excluded_roles.include?(role.to_s) %>
+                <label class="tag-checkbox-label <%= 'checked' if is_checked %>" data-role-name="<%= role_name.downcase %>" data-checked="<%= is_checked %>">
+                  <%= check_box_tag 'targeting[excluded_roles][]', role, is_checked, id: "excluded_role_#{role}", class: 'tag-checkbox' %>
+                  <span class="tag-checkbox-text"><%= role_display %></span>
+                </label>
+              <% end %>
+            </div>
+            <p class="form-hint">Users with these roles will be blocked from this feature.</p>
+          </div>
+        <% end %>
+
+        <% if tags_list.any? %>
+          <% current_excluded_tags = targeting[:excluded_tags].is_a?(Array) ? targeting[:excluded_tags] : (targeting[:excluded_tags] ? [targeting[:excluded_tags]] : []) %>
+          <div class="form-group">
+            <label class="form-label">Excluded Tags</label>
+            <div class="tags-search-container">
+              <input type="text" id="excluded_tags_search" class="tags-search-input" placeholder="Search tags to exclude..." autocomplete="off">
+              <div class="tags-count" id="excluded_tags_count">
+                <span id="excluded_tags_visible_count"><%= tags_list.length %></span> of <span id="excluded_tags_total_count"><%= tags_list.length %></span>
+              </div>
+            </div>
+            <div class="tags-checkbox-container" id="excluded_tags_checkbox_container">
+              <% checked_excluded_tags, unchecked_excluded_tags = tags_list.partition do |tag|
+                   tag_id = tag.respond_to?(:id) ? tag.id.to_s : tag.to_s
+                   current_excluded_tags.include?(tag_id.to_s)
+                 end %>
+              <% (checked_excluded_tags + unchecked_excluded_tags).each do |tag| %>
+                <% tag_id = tag.respond_to?(:id) ? tag.id.to_s : tag.to_s %>
+                <% tag_name = tag.respond_to?(:name) ? tag.name : (tag.respond_to?(:to_s) ? tag.to_s : tag_id) %>
+                <% is_checked = current_excluded_tags.include?(tag_id.to_s) %>
+                <label class="tag-checkbox-label <%= 'checked' if is_checked %>" data-tag-name="<%= tag_name.downcase %>" data-tag-id="<%= tag_id.downcase %>" data-checked="<%= is_checked %>">
+                  <%= check_box_tag 'targeting[excluded_tags][]', tag_id, is_checked, id: "excluded_tag_#{tag_id}", class: 'tag-checkbox' %>
+                  <span class="tag-checkbox-text"><%= tag_name %></span>
+                </label>
+              <% end %>
+            </div>
+            <p class="form-hint">Users with these tags will be blocked from this feature.</p>
+          </div>
+        <% end %>
       </div>
 
-      <div class="form-group">
+      <div style="padding-top: 24px; border-top: 1px solid var(--color-border); margin-top: 8px;">
         <div class="btn-group">
-          <%= submit_tag 'Update Targeting', class: 'btn btn-primary btn-sm' %>
-          <a href="<%= magick_admin_ui.feature_path(@feature.name) %>" class="btn btn-secondary btn-sm">Cancel</a>
+          <%= submit_tag 'Save Targeting Rules', class: 'btn btn-primary' %>
+          <a href="<%= magick_admin_ui.feature_path(@feature.name) %>" class="btn btn-secondary">Cancel</a>
         </div>
       </div>
     <% end %>

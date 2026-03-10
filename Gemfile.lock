@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    magick-feature-flags (1.2.0)
+    magick-feature-flags (1.2.2)
 
 GEM
   remote: https://rubygems.org/

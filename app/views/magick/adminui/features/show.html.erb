@@ -1,118 +1,17 @@
-<div class="card">
-  <div class="card-header">
-    <h2><%= @feature.display_name || @feature.name %></h2>
-    <div class="btn-group">
-      <a href="<%= magick_admin_ui.features_path %>" class="btn btn-secondary btn-sm">← Back to List</a>
-      <a href="<%= magick_admin_ui.edit_feature_path(@feature.name) %>" class="btn btn-primary btn-sm">Edit</a>
-    </div>
-  </div>
+<div class="breadcrumb">
+  <a href="<%= magick_admin_ui.features_path %>">Features</a>
+  <span class="breadcrumb-sep">/</span>
+  <span class="breadcrumb-current"><%= @feature.display_name || @feature.name %></span>
+</div>
 
-  <div class="feature-details">
-    <div class="detail-item">
-      <div class="detail-label">Name</div>
-      <div class="detail-value"><%= @feature.name %></div>
-    </div>
-    <div class="detail-item">
-      <div class="detail-label">Type</div>
-      <div class="detail-value">
-        <span class="badge badge-info"><%= @feature.type.to_s.capitalize %></span>
-      </div>
-    </div>
-    <% if @feature.group.present? %>
-      <div class="detail-item">
-        <div class="detail-label">Group</div>
-        <div class="detail-value">
-          <span class="badge badge-info"><%= @feature.group %></span>
-        </div>
-      </div>
-    <% end %>
-    <div class="detail-item">
-      <div class="detail-label">Status</div>
-      <div class="detail-value">
-        <% case @feature.status.to_sym %>
-        <% when :active %>
-          <span class="badge badge-success">Active</span>
-        <% when :deprecated %>
-          <span class="badge badge-warning">Deprecated</span>
-        <% when :inactive %>
-          <span class="badge badge-danger">Inactive</span>
-        <% else %>
-          <span class="badge"><%= @feature.status.to_s.capitalize %></span>
-        <% end %>
-      </div>
-    </div>
-    <div class="detail-item">
-      <div class="detail-label">Current Value</div>
-      <div class="detail-value">
-        <% if @feature.type == :boolean %>
-          <% targeting = @feature.instance_variable_get(:@targeting) || {} %>
-          <% if targeting.any? %>
-            <span class="badge badge-warning">Partially Enabled</span>
-            <small style="display: block; color: #999; margin-top: 4px;">Targeting rules are active</small>
-          <% elsif @feature.enabled? %>
-            <span class="badge badge-success">Enabled</span>
-          <% else %>
-            <span class="badge badge-danger">Disabled</span>
-          <% end %>
-        <% else %>
-          <code><%= @feature.get_value.inspect %></code>
-        <% end %>
-      </div>
-    </div>
-    <div class="detail-item">
-      <div class="detail-label">Default Value</div>
-      <div class="detail-value"><code><%= @feature.default_value.inspect %></code></div>
-    </div>
-  </div>
-
-  <% if @feature.description %>
-    <div class="card" style="margin-top: 20px;">
-      <h3 style="margin-bottom: 10px;">Description</h3>
-      <p><%= @feature.description %></p>
-    </div>
-  <% end %>
-
-  <% targeting = @feature.instance_variable_get(:@targeting) || {} %>
-  <div class="card targeting-rules" style="margin-top: 20px;">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 12px;">
-      <h3 style="margin: 0;">Targeting Rules</h3>
-      <a href="<%= magick_admin_ui.edit_feature_path(@feature.name) %>" class="btn btn-secondary btn-sm">Manage Targeting</a>
-    </div>
-    <% if targeting.any? %>
-      <ul>
-        <% targeting.each do |key, value| %>
-          <li>
-            <strong><%= key.to_s.humanize.gsub('Percentage ', '') %>:</strong>
-            <% if key.to_s == 'percentage_users' || key.to_s == 'percentage_requests' %>
-              <span class="badge badge-info" style="margin-left: 4px;"><%= value.to_f %>%</span>
-            <% elsif value.is_a?(Array) %>
-              <% value.each do |v| %>
-                <span class="badge badge-info" style="margin-left: 4px;"><%= v %></span>
-              <% end %>
-            <% else %>
-              <span class="badge badge-info" style="margin-left: 4px;"><%= value %></span>
-            <% end %>
-          </li>
-        <% end %>
-      </ul>
-    <% else %>
-      <p style="color: #999; font-style: italic;">No targeting rules set. Feature is enabled/disabled globally.</p>
+<div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 24px; flex-wrap: wrap; gap: 16px;">
+  <div>
+    <h1 class="page-title"><%= @feature.display_name || @feature.name %></h1>
+    <% if @feature.description %>
+      <p class="page-subtitle"><%= @feature.description %></p>
     <% end %>
   </div>
-
-  <% dependencies = @feature.dependencies %>
-  <% if dependencies.any? %>
-    <div class="card" style="margin-top: 20px;">
-      <h3 style="margin-bottom: 10px;">Dependencies</h3>
-      <ul>
-        <% dependencies.each do |dep| %>
-          <li><code><%= dep %></code></li>
-        <% end %>
-      </ul>
-    </div>
-  <% end %>
-
-  <div class="btn-group" style="margin-top: 20px;">
+  <div class="btn-group">
     <% if @feature.type == :boolean %>
       <% if @feature.enabled? %>
         <%= button_to 'Disable', magick_admin_ui.disable_feature_path(@feature.name), method: :put, class: 'btn btn-danger btn-sm' %>
@@ -120,7 +19,137 @@
         <%= button_to 'Enable', magick_admin_ui.enable_feature_path(@feature.name), method: :put, class: 'btn btn-success btn-sm' %>
       <% end %>
     <% end %>
-    <a href="<%= magick_admin_ui.edit_feature_path(@feature.name) %>" class="btn btn-primary btn-sm">Edit</a>
-    <a href="<%= magick_admin_ui.stat_path(@feature.name) %>" class="btn btn-secondary btn-sm">View Statistics</a>
+    <a href="<%= magick_admin_ui.edit_feature_path(@feature.name) %>" class="btn btn-secondary btn-sm">Edit</a>
+    <a href="<%= magick_admin_ui.stat_path(@feature.name) %>" class="btn btn-ghost btn-sm">Statistics</a>
   </div>
 </div>
+
+<div class="detail-row">
+  <div class="detail-chip">
+    <span class="detail-chip-label">Key</span>
+    <span class="detail-chip-value" style="font-family: var(--font-mono); font-size: 13px;"><%= @feature.name %></span>
+  </div>
+  <div class="detail-chip">
+    <span class="detail-chip-label">Type</span>
+    <span class="detail-chip-value"><%= @feature.type.to_s.capitalize %></span>
+  </div>
+  <% if @feature.group.present? %>
+    <div class="detail-chip">
+      <span class="detail-chip-label">Group</span>
+      <span class="detail-chip-value"><%= @feature.group %></span>
+    </div>
+  <% end %>
+  <div class="detail-chip">
+    <span class="detail-chip-label">Status</span>
+    <span class="detail-chip-value">
+      <% case @feature.status.to_sym %>
+      <% when :active %>
+        <span class="status-indicator"><span class="status-dot status-dot-green"></span> Active</span>
+      <% when :deprecated %>
+        <span class="status-indicator"><span class="status-dot status-dot-yellow"></span> Deprecated</span>
+      <% when :inactive %>
+        <span class="status-indicator"><span class="status-dot status-dot-red"></span> Inactive</span>
+      <% else %>
+        <span class="status-indicator"><%= @feature.status.to_s.capitalize %></span>
+      <% end %>
+    </span>
+  </div>
+  <div class="detail-chip">
+    <span class="detail-chip-label">Value</span>
+    <span class="detail-chip-value">
+      <% if @feature.type == :boolean %>
+        <% targeting = @feature.instance_variable_get(:@targeting) || {} %>
+        <% if targeting.any? %>
+          <span class="toggle-indicator toggle-partial">PARTIAL</span>
+        <% elsif @feature.enabled? %>
+          <span class="toggle-indicator toggle-on">ON</span>
+        <% else %>
+          <span class="toggle-indicator toggle-off">OFF</span>
+        <% end %>
+      <% else %>
+        <code><%= @feature.get_value.inspect %></code>
+      <% end %>
+    </span>
+  </div>
+  <div class="detail-chip">
+    <span class="detail-chip-label">Default</span>
+    <span class="detail-chip-value"><code><%= @feature.default_value.inspect %></code></span>
+  </div>
+</div>
+
+<% targeting = @feature.instance_variable_get(:@targeting) || {} %>
+<% inclusion_rules = targeting.reject { |k, _| k.to_s.start_with?('excluded_') } %>
+<% exclusion_rules = targeting.select { |k, _| k.to_s.start_with?('excluded_') } %>
+
+<div class="card">
+  <div class="card-header">
+    <h2>Targeting Rules</h2>
+    <a href="<%= magick_admin_ui.edit_feature_path(@feature.name) %>" class="link-subtle">Manage</a>
+  </div>
+  <div class="card-body">
+    <% if inclusion_rules.any? %>
+      <div class="targeting-section targeting-section-inclusion">
+        <h4>Inclusions</h4>
+        <% inclusion_rules.each do |key, value| %>
+          <div class="targeting-rule">
+            <span class="targeting-rule-label"><%= key.to_s.humanize.gsub('Percentage ', '') %></span>
+            <div class="targeting-rule-values">
+              <% if key.to_s == 'percentage_users' || key.to_s == 'percentage_requests' %>
+                <span class="pill pill-inclusion"><%= value.to_f %>%</span>
+              <% elsif value.is_a?(Array) %>
+                <% value.each do |v| %>
+                  <span class="pill pill-inclusion"><%= v %></span>
+                <% end %>
+              <% else %>
+                <span class="pill pill-inclusion"><%= value %></span>
+              <% end %>
+            </div>
+          </div>
+        <% end %>
+      </div>
+    <% end %>
+
+    <% if exclusion_rules.any? %>
+      <% if inclusion_rules.any? %>
+        <div style="margin-top: 20px;"></div>
+      <% end %>
+      <div class="targeting-section targeting-section-exclusion">
+        <h4>Exclusions</h4>
+        <% exclusion_rules.each do |key, value| %>
+          <div class="targeting-rule targeting-rule-exclusion">
+            <span class="targeting-rule-label"><%= key.to_s.sub('excluded_', '').humanize %></span>
+            <div class="targeting-rule-values">
+              <% if value.is_a?(Array) %>
+                <% value.each do |v| %>
+                  <span class="pill pill-exclusion"><%= v %></span>
+                <% end %>
+              <% else %>
+                <span class="pill pill-exclusion"><%= value %></span>
+              <% end %>
+            </div>
+          </div>
+        <% end %>
+      </div>
+    <% end %>
+
+    <% if inclusion_rules.empty? && exclusion_rules.empty? %>
+      <p style="color: var(--color-text-muted); font-size: 13px;">No targeting rules configured. Feature applies globally.</p>
+    <% end %>
+  </div>
+</div>
+
+<% dependencies = @feature.dependencies %>
+<% if dependencies.any? %>
+  <div class="card">
+    <div class="card-header">
+      <h2>Dependencies</h2>
+    </div>
+    <div class="card-body">
+      <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+        <% dependencies.each do |dep| %>
+          <code><%= dep %></code>
+        <% end %>
+      </div>
+    </div>
+  </div>
+<% end %>

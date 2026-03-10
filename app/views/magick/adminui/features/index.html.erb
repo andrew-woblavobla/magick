@@ -1,29 +1,26 @@
-<div class="card">
-  <div class="card-header">
-    <h2>Feature Flags</h2>
-    <div>
-      <span class="badge badge-info"><%= @features.size %> features</span>
-    </div>
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
+  <div>
+    <h1 class="page-title">Features</h1>
+    <p class="page-subtitle" id="feature_count_text"><%= @features.size %> feature<%= @features.size != 1 ? 's' : '' %></p>
   </div>
+</div>
 
-  <!-- Filtering UI -->
-  <div style="padding: 16px; border-bottom: 1px solid #e0e0e0; background: #f9f9f9;">
-    <%= form_with url: magick_admin_ui.features_path, method: :get, local: true, style: "display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;" do |f| %>
-      <div style="flex: 1; min-width: 200px;">
-        <label for="search" style="display: block; margin-bottom: 4px; font-weight: 500;">Search</label>
-        <%= text_field_tag :search, params[:search], placeholder: "Search by name or description...", class: 'form-control', style: "width: 100%;" %>
+<div class="card">
+  <div style="padding: 12px 16px; border-bottom: 1px solid var(--color-border);">
+    <div class="filter-bar" style="display: flex; gap: 12px; align-items: center;">
+      <div style="flex: 1; min-width: 200px; position: relative;">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--color-text-muted); pointer-events: none;"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        <input type="text" id="feature_search_input" placeholder="Search features..." style="padding-left: 34px;" autocomplete="off" value="<%= params[:search] %>">
       </div>
       <div style="flex: 0 0 180px;">
-        <label for="group" style="display: block; margin-bottom: 4px; font-weight: 500;">Group</label>
-        <%= select_tag :group, options_for_select([['All Groups', '']] + @available_groups.map { |g| [g, g] }, params[:group]), class: 'form-control', style: "width: 100%;" %>
+        <select id="feature_group_select">
+          <option value="">All groups</option>
+          <% @available_groups.each do |g| %>
+            <option value="<%= g %>" <%= 'selected' if params[:group] == g %>><%= g %></option>
+          <% end %>
+        </select>
       </div>
-      <div style="flex: 0 0 auto;">
-        <%= submit_tag 'Filter', class: 'btn btn-primary btn-sm', style: "height: 38px;" %>
-        <% if params[:search].present? || params[:group].present? %>
-          <%= link_to 'Clear', magick_admin_ui.features_path, class: 'btn btn-secondary btn-sm', style: "height: 38px;" %>
-        <% end %>
-      </div>
-    <% end %>
+    </div>
   </div>
 
   <% if @features.empty? %>
@@ -40,68 +37,70 @@
           <th>Type</th>
           <th>Status</th>
           <th>Value</th>
-          <th>Description</th>
-          <th>Actions</th>
+          <th style="text-align: right;">Actions</th>
         </tr>
       </thead>
-      <tbody>
+      <tbody id="features_table_body">
         <% @features.each do |feature| %>
-          <tr>
+          <tr data-feature
+              data-feature-name="<%= feature.name %>"
+              data-feature-display="<%= feature.display_name %>"
+              data-feature-desc="<%= feature.description %>"
+              data-feature-group="<%= feature.group %>">
             <td data-label="Name">
-              <strong><%= feature.display_name || feature.name %></strong>
-              <br>
-              <small style="color: #999;"><%= feature.name %></small>
+              <div style="font-weight: 600; color: var(--color-text);"><%= feature.display_name || feature.name %></div>
+              <div style="font-size: 12px; color: var(--color-text-muted); font-family: var(--font-mono);"><%= feature.name %></div>
             </td>
             <td data-label="Group">
               <% if feature.group.present? %>
-                <span class="badge badge-info"><%= feature.group %></span>
+                <span class="badge badge-neutral"><%= feature.group %></span>
               <% else %>
-                <em style="color: #999;">—</em>
+                <span style="color: var(--color-text-muted);">&mdash;</span>
               <% end %>
             </td>
             <td data-label="Type">
-              <span class="badge badge-info">
-                <%= feature.type.to_s.capitalize %>
-              </span>
+              <span style="font-size: 13px; color: var(--color-text-secondary);"><%= feature.type.to_s.capitalize %></span>
             </td>
             <td data-label="Status">
               <% case feature.status.to_sym %>
               <% when :active %>
-                <span class="badge badge-success">Active</span>
+                <span class="status-indicator"><span class="status-dot status-dot-green"></span> Active</span>
               <% when :deprecated %>
-                <span class="badge badge-warning">Deprecated</span>
+                <span class="status-indicator"><span class="status-dot status-dot-yellow"></span> Deprecated</span>
               <% when :inactive %>
-                <span class="badge badge-danger">Inactive</span>
+                <span class="status-indicator"><span class="status-dot status-dot-red"></span> Inactive</span>
               <% else %>
-                <span class="badge"><%= feature.status.to_s.capitalize %></span>
+                <span class="status-indicator"><%= feature.status.to_s.capitalize %></span>
               <% end %>
             </td>
             <td data-label="Value">
               <% if feature.type == :boolean %>
                 <% targeting = feature.instance_variable_get(:@targeting) || {} %>
                 <% if targeting.any? %>
-                  <span class="badge badge-warning">Partially Enabled</span>
+                  <span class="toggle-indicator toggle-partial">PARTIAL</span>
                 <% elsif feature.enabled? %>
-                  <span class="badge badge-success">Enabled</span>
+                  <span class="toggle-indicator toggle-on">ON</span>
                 <% else %>
-                  <span class="badge badge-danger">Disabled</span>
+                  <span class="toggle-indicator toggle-off">OFF</span>
                 <% end %>
               <% else %>
                 <code><%= feature.get_value.inspect %></code>
               <% end %>
             </td>
-            <td data-label="Description">
-              <%= feature.description || '<em>No description</em>'.html_safe %>
-            </td>
-            <td data-label="Actions">
-              <div class="btn-group">
-                <a href="<%= magick_admin_ui.feature_path(feature.name) %>" class="btn btn-primary btn-sm">View</a>
-                <a href="<%= magick_admin_ui.edit_feature_path(feature.name) %>" class="btn btn-secondary btn-sm">Edit</a>
-              </div>
+            <td data-label="Actions" style="text-align: right;">
+              <a href="<%= magick_admin_ui.feature_path(feature.name) %>" class="link-subtle">View</a>
             </td>
           </tr>
         <% end %>
       </tbody>
     </table>
+    <tr id="features_empty_filter" style="display: none;">
+      <td colspan="6">
+        <div class="empty-state" style="padding: 40px 20px;">
+          <h3>No matching features</h3>
+          <p>Try adjusting your search or filter.</p>
+        </div>
+      </td>
+    </tr>
   <% end %>
 </div>
