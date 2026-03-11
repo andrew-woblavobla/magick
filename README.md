@@ -467,6 +467,32 @@ class CheckoutController < ApplicationController
 end
 ```
 
+**Experiments without a user (anonymous visitors):**
+
+For flows where there's no authenticated user yet (e.g., registration, landing pages), use any stable identifier as `user_id` — a session ID or a tracking cookie:
+
+```ruby
+class RegistrationController < ApplicationController
+  def new
+    cookies[:visitor_id] ||= SecureRandom.uuid
+    @variant = Magick.variant(:registration_flow, user_id: cookies[:visitor_id])
+  end
+end
+```
+
+The hashing just needs a consistent string. As long as the same visitor sends the same identifier, they get the same variant every time.
+
+**Safe to call on non-existent experiments:**
+
+```ruby
+Magick.variant(:nonexistent, user_id: 123)  # => nil
+Magick.variant_value(:nonexistent, user_id: 123)  # => nil
+```
+
+**Important — changing weights may shift users:**
+
+You can change variant weights at any time via the Admin UI or code, and changes take effect immediately across all adapters. However, changing weights alters the bucket boundaries, which means some users may be reassigned to a different variant after the update. Magick does not persist individual user-to-variant assignments — assignment is computed on the fly from the hash. If your experiment requires that users never shift variants mid-experiment, you should persist the assignment externally (e.g., store `user_id → variant` in a database table on first exposure).
+
 **How it works:**
 - Variants are assigned using a deterministic MD5 hash of `feature_name + user_id`
 - The same user always gets the same variant across sessions and requests
