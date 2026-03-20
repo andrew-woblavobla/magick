@@ -516,20 +516,16 @@ module Magick
     end
 
     def enable(user_id: nil)
-      # Check if this feature is a dependency of any disabled features
-      # If a main feature that depends on this feature is disabled, prevent enabling this dependency
-      # Dependencies cannot be enabled until the main feature is enabled
-      dependent_features = find_dependent_features
-      disabled_dependents = dependent_features.select do |dep_feature_name|
-        dep_feature = Magick.features[dep_feature_name.to_s] || Magick[dep_feature_name]
-        # Check if the dependent feature (main feature) is disabled
-        dep_feature && !dep_feature.enabled?
-      end
+      # Check that all of this feature's own dependencies are enabled
+      # e.g. if checkout depends on payments, checkout can't be enabled until payments is
+      deps = @dependencies || []
+      unless deps.empty?
+        disabled_deps = deps.select do |dep_name|
+          dep_feature = Magick.features[dep_name.to_s] || Magick[dep_name]
+          dep_feature && !dep_feature.enabled?
+        end
 
-      unless disabled_dependents.empty?
-        # Return false if any main feature that depends on this feature is disabled
-        # This prevents enabling a dependency when the main feature is disabled
-        return false
+        return false unless disabled_deps.empty?
       end
 
       # Clear all targeting to enable globally
@@ -988,13 +984,12 @@ module Magick
     end
 
     def disable_dependent_features(user_id: nil)
-      # Cascade-disable this feature's own dependencies (downstream sub-features).
-      # e.g. if A depends on B, disabling A also disables B.
-      # But disabling B does NOT cascade up to A.
-      deps = @dependencies || []
-      return if deps.empty?
+      # Cascade-disable features that depend ON this feature.
+      # e.g. if checkout depends on payments, disabling payments also disables checkout.
+      dependents = find_dependent_features
+      return if dependents.empty?
 
-      deps.each do |dep_name|
+      dependents.each do |dep_name|
         dep_feature = Magick.features[dep_name.to_s] || Magick[dep_name]
         next unless dep_feature
 
