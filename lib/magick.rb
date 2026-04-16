@@ -118,13 +118,22 @@ module Magick
       features[feature_name.to_s] || Feature.new(feature_name, adapter_registry || default_adapter_registry)
     end
 
+    # Mutex that guards writes to @features. Reads are lock-free by design:
+    # register_feature swaps the @features reference to a NEW hash via
+    # copy-on-write, so a concurrent iterator keeps its own snapshot and
+    # never sees "can't add a new key into hash during iteration".
+    FEATURES_MUTEX = Mutex.new
+    private_constant :FEATURES_MUTEX
+
     def features
       @features ||= {}
     end
 
     def register_feature(name, **options)
       feature = Feature.new(name, adapter_registry || default_adapter_registry, **options)
-      features[name.to_s] = feature
+      FEATURES_MUTEX.synchronize do
+        @features = (@features || {}).merge(name.to_s => feature)
+      end
       feature
     end
 
@@ -197,7 +206,9 @@ module Magick
 
     def import(data, format: :json)
       imported = ExportImport.import(data, adapter_registry || default_adapter_registry)
-      imported.each { |name, feature| features[name] = feature }
+      FEATURES_MUTEX.synchronize do
+        @features = (@features || {}).merge(imported)
+      end
       imported
     end
 
