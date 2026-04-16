@@ -125,11 +125,7 @@ module Magick
           end
 
           if @async && defined?(Thread)
-            Thread.new do
-              update_redis.call
-              # Publish AFTER Redis write so other processes read fresh data
-              publish_cache_invalidation(feature_name)
-            end
+            spawn_async_write(feature_name, update_redis)
           else
             update_redis.call
             publish_cache_invalidation(feature_name)
@@ -275,11 +271,7 @@ module Magick
           end
 
           if @async && defined?(Thread)
-            Thread.new do
-              update_redis.call
-              # Publish AFTER Redis write so other processes read fresh data
-              publish_cache_invalidation(feature_name)
-            end
+            spawn_async_write(feature_name, update_redis)
           else
             update_redis.call
             publish_cache_invalidation(feature_name)
@@ -361,6 +353,22 @@ module Magick
 
         thread.kill
         thread.join(1) # give it a moment to actually unwind
+      end
+
+      # Fire-and-forget async Redis write. Wrapped so that a failure in the
+      # update or publish step is logged rather than silently killing the
+      # thread — Thread#abort_on_exception is false, which otherwise swallows
+      # the error completely.
+      def spawn_async_write(feature_name, update_redis)
+        thread = Thread.new do
+          update_redis.call
+          publish_cache_invalidation(feature_name)
+        rescue StandardError => e
+          warn "Magick: async Redis write failed for '#{Magick::LogSafe.sanitize(feature_name)}': #{e.class}: #{Magick::LogSafe.sanitize(e.message)}"
+        end
+        thread.name = "magick-async-write-#{feature_name}" if thread.respond_to?(:name=)
+        thread.abort_on_exception = false
+        thread
       end
 
       # Record that this process just wrote a feature, so the subscriber
@@ -497,7 +505,7 @@ module Magick
               end
 
               if defined?(Rails) && Rails.env.development?
-                warn "Magick: Error processing cache invalidation for '#{feature_name}': #{e.message}"
+                warn "Magick: Error processing cache invalidation for '#{Magick::LogSafe.sanitize(feature_name)}': #{Magick::LogSafe.sanitize(e.message)}"
               end
             end
           end

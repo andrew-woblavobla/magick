@@ -58,6 +58,20 @@ RSpec.describe Magick::ExportImport, 'round-trip' do
     expect(targeting[:excluded_ip_addresses] || targeting['excluded_ip_addresses']).to include('10.0.0.99')
   end
 
+  describe 'input validation' do
+    it 'rejects a payload larger than MAGICK_MAX_IMPORT_FEATURES' do
+      big = Array.new(11) { |i| { name: "f#{i}" } }
+      ENV['MAGICK_MAX_IMPORT_FEATURES'] = '10'
+      expect { Magick::ExportImport.import(big, registry) }.to raise_error(Magick::ExportImport::ImportError, /refused to import 11/)
+    ensure
+      ENV.delete('MAGICK_MAX_IMPORT_FEATURES')
+    end
+
+    it 'rejects non-Hash feature entries' do
+      expect { Magick::ExportImport.import([:not_a_hash], registry) }.to raise_error(Magick::ExportImport::ImportError, /must be a Hash/)
+    end
+  end
+
   it 'preserves feature dependencies' do
     Magick.register_feature(:parent)
     Magick.register_feature(:child)

@@ -85,7 +85,7 @@ module Magick
         perf_metrics.record(name, 'enabled?', duration, success: false)
       end
       # Return false on any error (fail-safe)
-      warn "Magick: Error checking feature '#{name}': #{e.message}" if defined?(Rails) && Rails.env.development?
+      warn "Magick: Error checking feature '#{Magick::LogSafe.sanitize(name)}': #{Magick::LogSafe.sanitize(e.message)}" if defined?(Rails) && Rails.env.development?
       false
     end
 
@@ -152,7 +152,7 @@ module Magick
       end
     rescue StandardError => e
       # Return false on any error (fail-safe)
-      warn "Magick: Error in check_enabled for '#{name}': #{e.message}" if defined?(Rails) && Rails.env.development?
+      warn "Magick: Error in check_enabled for '#{Magick::LogSafe.sanitize(name)}': #{Magick::LogSafe.sanitize(e.message)}" if defined?(Rails) && Rails.env.development?
       false
     end
 
@@ -223,7 +223,7 @@ module Magick
       end
     rescue StandardError => e
       # Return default value on error (fail-safe)
-      warn "Magick: Error in get_value for '#{name}': #{e.message}" if defined?(Rails) && Rails.env.development?
+      warn "Magick: Error in get_value for '#{Magick::LogSafe.sanitize(name)}': #{Magick::LogSafe.sanitize(e.message)}" if defined?(Rails) && Rails.env.development?
       default_value
     end
 

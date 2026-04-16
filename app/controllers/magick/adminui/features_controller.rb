@@ -127,6 +127,10 @@ module Magick
       def update_targeting
         # Handle targeting updates from form
         targeting_params = params[:targeting] || {}
+        unless hash_like?(targeting_params)
+          redirect_to magick_admin_ui.feature_path(@feature.name), alert: 'Invalid targeting payload.'
+          return
+        end
 
         # Ensure we're using the registered feature instance
         feature_name = @feature.name.to_s
@@ -280,6 +284,11 @@ module Magick
       def update_variants
         variants_data = []
 
+        if params[:variants].present? && !hash_like?(params[:variants])
+          redirect_to magick_admin_ui.feature_path(@feature.name), alert: 'Invalid variants payload.'
+          return
+        end
+
         if params[:variants].present?
           params[:variants].each do |_index, variant_params|
             next if variant_params[:name].blank?
@@ -318,6 +327,14 @@ module Magick
             nil
           end
         end
+      end
+
+      # A hash-like payload is either a raw Hash or an
+      # ActionController::Parameters (both respond to :each with key/value).
+      # Rejecting anything else lets us give a 400-style redirect instead of
+      # a 500 with a NoMethodError stack trace.
+      def hash_like?(obj)
+        obj.is_a?(Hash) || (defined?(ActionController::Parameters) && obj.is_a?(ActionController::Parameters))
       end
 
       def set_feature

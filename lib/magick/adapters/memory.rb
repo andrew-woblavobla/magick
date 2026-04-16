@@ -31,6 +31,7 @@ module Magick
 
       def set(feature_name, key, value)
         mutex.synchronize do
+          cleanup_expired_if_needed
           feature_name_str = feature_name.to_s
           store[feature_name_str] ||= {}
           store[feature_name_str][key.to_s] = serialize_value(value)
@@ -91,6 +92,7 @@ module Magick
       # Bulk set all data for a feature (used by preloading)
       def set_all_data(feature_name, data_hash)
         mutex.synchronize do
+          cleanup_expired_if_needed
           feature_name_str = feature_name.to_s
           store[feature_name_str] ||= {}
           data_hash.each do |key, value|

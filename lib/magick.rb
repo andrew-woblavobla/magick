@@ -24,6 +24,7 @@ require_relative 'magick/targeting/custom_attribute'
 require_relative 'magick/targeting/complex'
 require_relative 'magick/errors'
 
+require_relative 'magick/log_safe'
 require_relative 'magick/audit_log'
 require_relative 'magick/performance_metrics'
 require_relative 'magick/export_import'

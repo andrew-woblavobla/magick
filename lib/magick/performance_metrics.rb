@@ -2,6 +2,8 @@
 
 module Magick
   class PerformanceMetrics
+    METRICS_RING_CAP = 1_000
+
     class Metric
       attr_reader :feature_name, :operation, :duration, :timestamp, :success
 
@@ -93,8 +95,9 @@ module Magick
       pending_count = nil
       total_pending = nil
       @mutex.synchronize do
-        # Only create Metric object if we're keeping metrics in memory
-        if @metrics.length < 1000
+        # Pre-insert cap: construct + append only when there is room.
+        # Keeps @metrics bounded at METRICS_RING_CAP under any load.
+        if @metrics.length < METRICS_RING_CAP
           metric = Metric.new(feature_name_str, operation_str, duration, success: success)
           @metrics << metric
         end
@@ -102,8 +105,6 @@ module Magick
         @pending_updates[feature_name_str] += 1
         pending_count = @pending_updates[feature_name_str]
         total_pending = @pending_updates.values.sum
-        # Keep only last 1000 metrics (as a safety limit)
-        @metrics.shift if @metrics.length > 1000
       end
 
       # Rails 8+ event for usage tracking (cached check)

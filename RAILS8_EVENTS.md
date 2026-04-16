@@ -104,6 +104,18 @@ Rails.event.set_context(request_id: request.uuid, user_id: current_user.id)
 }
 ```
 
+### feature_enabled_globally / feature_disabled_globally
+Emitted when `Feature#enable` / `Feature#disable` clears all targeting and
+flips the feature's value for every user.
+
+```ruby
+{
+  feature_name: "new_dashboard",
+  user_id: 123,            # actor who flipped the switch (optional)
+  timestamp: "2024-01-01T12:00:00Z"
+}
+```
+
 ### dependency_added / dependency_removed
 ```ruby
 {

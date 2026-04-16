@@ -32,3 +32,21 @@ Magick.configure do
   # Enable deprecation warnings in logs
   warn_on_deprecated enabled: true
 end
+
+# Admin UI configuration (optional).
+# The Admin UI is CSRF-protected and 404s on unknown feature IDs, BUT
+# authentication is opt-in — if you mount the engine without configuring
+# `require_role`, the UI will be reachable by anyone who can hit its routes.
+# Always wire it to your host app's auth layer:
+#
+# Magick::AdminUI.configure do |c|
+#   c.require_role = ->(controller) { controller.current_user&.admin? }
+#   c.available_roles = %w[admin manager]
+#   c.available_tags  = -> { Tag.pluck(:name) }
+# end
+
+# Graceful shutdown is handled automatically in Rails via an at_exit hook
+# wired by the Railtie. In long-running non-Rails processes (rake tasks,
+# CLI tools), call `Magick.shutdown!` explicitly before exit so the
+# Redis Pub/Sub subscriber and async metrics thread terminate cleanly.
+

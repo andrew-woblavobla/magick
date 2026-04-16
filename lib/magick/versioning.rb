@@ -30,19 +30,21 @@ module Magick
 
     def save_version(feature_name, version: nil, created_by: nil)
       feature = Magick.features[feature_name.to_s] || Magick[feature_name]
-      version ||= next_version(feature_name)
-      version_data = Version.new(version, feature.to_h, created_by: created_by)
+      feature_name_str = feature_name.to_s
 
-      @mutex.synchronize do
-        @versions[feature_name.to_s] ||= []
-        @versions[feature_name.to_s] << version_data
-        # Store in adapter
-        @adapter_registry.set(feature_name, "version_#{version}", version_data.to_h)
+      # Compute version + append under the same mutex so two concurrent
+      # save_version calls on the same feature can't both assign version N.
+      version_data = @mutex.synchronize do
+        list = (@versions[feature_name_str] ||= [])
+        resolved_version = version || (list.empty? ? 1 : list.last.version + 1)
+        entry = Version.new(resolved_version, feature.to_h, created_by: created_by)
+        list << entry
+        @adapter_registry.set(feature_name, "version_#{resolved_version}", entry.to_h)
+        entry
       end
 
-      # Rails 8+ event
       if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
-        Magick::Rails::Events.version_saved(feature_name, version: version, created_by: created_by)
+        Magick::Rails::Events.version_saved(feature_name, version: version_data.version, created_by: created_by)
       end
 
       version_data
@@ -83,14 +85,16 @@ module Magick
     end
 
     def get_versions(feature_name)
-      @versions[feature_name.to_s] || []
+      @mutex.synchronize { (@versions[feature_name.to_s] || []).dup }
     end
 
     private
 
     def next_version(feature_name)
-      versions = get_versions(feature_name)
-      versions.empty? ? 1 : versions.last.version + 1
+      @mutex.synchronize do
+        list = @versions[feature_name.to_s] || []
+        list.empty? ? 1 : list.last.version + 1
+      end
     end
   end
 end

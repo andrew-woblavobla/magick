@@ -4,6 +4,18 @@ require 'json'
 
 module Magick
   class ExportImport
+    # Hard cap on the number of features accepted by a single import call.
+    # Guards against DoS via an oversized payload and (combined with Admin UI
+    # auth) stops an attacker from using import as a flag-replacement
+    # primitive. Override with the MAGICK_MAX_IMPORT_FEATURES env var.
+    DEFAULT_MAX_IMPORT_FEATURES = 10_000
+
+    class ImportError < StandardError; end
+
+    def self.max_import_features
+      ENV.fetch('MAGICK_MAX_IMPORT_FEATURES', DEFAULT_MAX_IMPORT_FEATURES).to_i
+    end
+
     def self.export(features_hash)
       result = features_hash.map do |_name, feature|
         feature.to_h
@@ -29,8 +41,20 @@ module Magick
     def self.import(data, adapter_registry)
       features = {}
       data = JSON.parse(data) if data.is_a?(String)
+      list = Array(data)
 
-      Array(data).each do |feature_data|
+      cap = max_import_features
+      if list.size > cap
+        raise ImportError,
+              "Magick.import: refused to import #{list.size} features; limit is #{cap}. " \
+              'Set MAGICK_MAX_IMPORT_FEATURES to override.'
+      end
+
+      list.each do |feature_data|
+        unless feature_data.is_a?(Hash)
+          raise ImportError, "Magick.import: each feature payload must be a Hash, got #{feature_data.class}"
+        end
+
         name = fetch(feature_data, :name)
         next unless name
 

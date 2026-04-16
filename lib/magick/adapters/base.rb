@@ -33,9 +33,13 @@ module Magick
         {}
       end
 
-      # Bulk set multiple keys for a feature in one call (override for efficiency)
-      def set_all_data(_feature_name, _data_hash)
-        # Default: no-op, subclasses override
+      # Bulk set multiple keys for a feature in one call.
+      # Subclasses MUST implement this — a no-op default silently drops
+      # bulk writes, which is why this used to cause hard-to-diagnose lost
+      # updates for custom adapters (audit P2-Co6).
+      def set_all_data(feature_name, data_hash)
+        raise NotImplementedError,
+              "#{self.class} must implement #set_all_data (feature=#{feature_name}, keys=#{data_hash.keys.inspect})"
       end
     end
   end
