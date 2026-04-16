@@ -368,6 +368,10 @@ module Magick
       def record_local_write(feature_name)
         @reload_mutex.synchronize do
           @local_writes[feature_name.to_s] = Time.now.to_f
+          # Also sweep stale tracking entries on the write path — a write-heavy
+          # process that rarely reads would otherwise never trigger cleanup,
+          # letting @local_writes and @last_reload_times grow unboundedly.
+          cleanup_stale_tracking_entries
         end
       end
 

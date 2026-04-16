@@ -26,20 +26,27 @@ module Magick
       end
     end
 
-    def initialize(adapter = nil)
+    DEFAULT_MAX_ENTRIES = 10_000
+
+    def initialize(adapter = nil, max_entries: DEFAULT_MAX_ENTRIES)
       @adapter = adapter || default_adapter
       @logs = []
+      @max_entries = max_entries.to_i.positive? ? max_entries.to_i : DEFAULT_MAX_ENTRIES
       @mutex = Mutex.new
     end
+
+    attr_reader :max_entries
 
     def log(feature_name, action, user_id: nil, changes: {}, metadata: {})
       entry = Entry.new(feature_name, action, user_id: user_id, changes: changes, metadata: metadata)
       @mutex.synchronize do
         @logs << entry
+        # Cap in-memory ring; older entries fall out once we cross the limit.
+        # This keeps long-running processes from growing @logs unboundedly.
+        @logs.shift while @logs.size > @max_entries
         @adapter.append(entry) if @adapter.respond_to?(:append)
       end
 
-      # Rails 8+ event
       if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
         Magick::Rails::Events.audit_logged(feature_name, action: action, user_id: user_id, changes: changes, **metadata)
       end
@@ -48,9 +55,13 @@ module Magick
     end
 
     def entries(feature_name: nil, limit: 100)
-      result = @logs
-      result = result.select { |e| e.feature_name == feature_name.to_s } if feature_name
-      result.last(limit)
+      snapshot = @mutex.synchronize { @logs.dup }
+      snapshot = snapshot.select { |e| e.feature_name == feature_name.to_s } if feature_name
+      snapshot.last(limit)
+    end
+
+    def size
+      @mutex.synchronize { @logs.size }
     end
 
     private
