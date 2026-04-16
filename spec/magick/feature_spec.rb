@@ -924,6 +924,18 @@ RSpec.describe Magick::Feature do
         variant = experiment.get_variant
         expect(%w[control variant_a variant_b]).to include(variant)
       end
+
+      it 'distributes users roughly according to configured weights (non-power-of-2 total)' do
+        # 50 / 30 / 20 with total_weight=100 — pre-existing bucket math has
+        # imperceptible modulo bias against the 32-bit hash space. Guard
+        # against future regressions that re-introduce bias by asserting
+        # each bucket stays within ±2% of its configured share across 20k users.
+        counts = Hash.new(0)
+        20_000.times { |i| counts[experiment.get_variant(user_id: "u#{i}")] += 1 }
+        expect(counts['control']).to be_within(400).of(10_000)
+        expect(counts['variant_a']).to be_within(400).of(6_000)
+        expect(counts['variant_b']).to be_within(400).of(4_000)
+      end
     end
 
     describe '#get_variant_value' do
