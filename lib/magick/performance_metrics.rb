@@ -45,7 +45,26 @@ module Magick
       @async_queue = Queue.new
       @async_thread = nil
       @async_enabled = true # Enable async by default for performance
+      @owner_pid = Process.pid
       start_async_processor
+    end
+
+    # Restart the async processor after a fork. Child processes inherit a dead
+    # thread reference + a queue that was populated in the parent; both must
+    # be recreated. The inherited thread (if alive in the parent's address
+    # space at fork time) is killed so it cannot keep polling a detached queue.
+    def ensure_async_processor!
+      return if @owner_pid == Process.pid
+
+      stale_thread = @async_thread
+      stale_queue = @async_queue
+      @async_queue = Queue.new
+      @async_thread = nil
+      @owner_pid = Process.pid
+      start_async_processor
+
+      stale_queue&.close if stale_queue.respond_to?(:close)
+      stale_thread&.kill
     end
 
     # Public accessor for redis_enabled

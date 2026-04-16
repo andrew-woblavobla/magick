@@ -23,8 +23,28 @@ module Magick
         @reload_mutex = Mutex.new
         @stopping = false
         @shutdown_mutex = Mutex.new
+        @owner_pid = Process.pid
         # Only start Pub/Sub subscriber if Redis is available
         # In memory-only mode, each process has isolated cache (no cross-process invalidation)
+        start_cache_invalidation_subscriber if redis_adapter
+      end
+
+      # Restart the Pub/Sub subscriber after a fork. The subscriber thread is
+      # not carried into child processes, so a worker inheriting a stale
+      # reference must re-create its own subscription. Safe to call on every
+      # request; it only does work when Process.pid changes.
+      def ensure_subscriber!
+        return if @owner_pid == Process.pid
+
+        @shutdown_mutex.synchronize do
+          return if @owner_pid == Process.pid
+
+          @subscriber_thread = nil
+          @subscriber = nil
+          @owner_pid = Process.pid
+          @stopping = false
+        end
+
         start_cache_invalidation_subscriber if redis_adapter
       end
 

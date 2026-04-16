@@ -119,6 +119,12 @@ if defined?(Rails)
         config.to_prepare do
           RequestStore.store[:magick_features] ||= {} if defined?(RequestStore)
 
+          # Restart background threads after Puma fork. ensure_*! is a no-op
+          # when Process.pid matches the owner pid, so it is cheap to call.
+          registry = Magick.adapter_registry
+          registry.ensure_subscriber! if registry.respond_to?(:ensure_subscriber!)
+          Magick.performance_metrics&.ensure_async_processor!
+
           # Final check: ensure Redis tracking is enabled (runs on every request in development)
           # This is the absolute last chance to enable it
           if Magick.performance_metrics && Magick.adapter_registry.is_a?(Adapters::Registry) && Magick.adapter_registry.redis_available? && !Magick.performance_metrics.redis_enabled
