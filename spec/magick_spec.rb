@@ -108,6 +108,12 @@ RSpec.describe Magick do
       Magick.reset!
       expect(Magick.features).to be_empty
     end
+
+    it 'resets the default adapter registry singleton' do
+      original = Magick.default_adapter_registry
+      Magick.reset!
+      expect(Magick.default_adapter_registry).not_to equal(original)
+    end
   end
 
   describe 'DSL methods' do

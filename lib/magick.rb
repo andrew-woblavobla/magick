@@ -263,9 +263,12 @@ module Magick
     end
 
     def reset!
+      safely_shutdown(@adapter_registry) { |r| r.shutdown }
+      safely_shutdown(@default_adapter_registry) { |r| r.shutdown }
       @features = {}
       @adapter_registry = nil
       @default_adapter = nil
+      @default_adapter_registry = nil
       @performance_metrics&.clear!
     end
 
