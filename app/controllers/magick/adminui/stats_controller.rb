@@ -3,6 +3,9 @@
 module Magick
   module AdminUI
     class StatsController < ActionController::Base
+      include ::ActionController::RequestForgeryProtection
+      protect_from_forgery with: :exception
+
       include Magick::AdminUI::Engine.routes.url_helpers
       layout 'application'
 
@@ -13,8 +16,13 @@ module Magick
       end
 
       def show
-        @feature = Magick.features[params[:id].to_s] || Magick[params[:id]]
-        @stats = Magick.feature_stats(params[:id].to_sym) || {} if @feature
+        feature_name = params[:id].to_s
+        @feature = Magick.features[feature_name]
+        unless @feature
+          head :not_found
+          return
+        end
+        @stats = Magick.feature_stats(feature_name.to_sym) || {}
       end
     end
   end

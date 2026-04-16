@@ -3,6 +3,13 @@
 module Magick
   module AdminUI
     class FeaturesController < ActionController::Base
+      # Inheriting ActionController::Base does NOT bring in CSRF protection.
+      # Include RequestForgeryProtection + explicit protect_from_forgery so
+      # cross-site form submissions cannot toggle flags behind a logged-in
+      # admin's back.
+      include ::ActionController::RequestForgeryProtection
+      protect_from_forgery with: :exception
+
       # Include route helpers so views can use magick_admin_ui.* helpers
       include Magick::AdminUI::Engine.routes.url_helpers
       layout 'application'
@@ -266,8 +273,8 @@ module Magick
 
         redirect_to magick_admin_ui.feature_path(@feature.name), notice: 'Targeting updated successfully'
       rescue StandardError => e
-        Rails.logger.error "Magick: Error updating targeting: #{e.message}\n#{e.backtrace.first(5).join("\n")}" if defined?(Rails)
-        redirect_to magick_admin_ui.feature_path(@feature.name), alert: "Error updating targeting: #{e.message}"
+        Rails.logger.error "Magick: Error updating targeting for #{@feature.name}: #{e.class}: #{e.message}\n#{e.backtrace.first(5).join("\n")}" if defined?(Rails)
+        redirect_to magick_admin_ui.feature_path(@feature.name), alert: 'Could not update targeting — see server logs for details.'
       end
 
       def update_variants
@@ -295,8 +302,8 @@ module Magick
 
         redirect_to magick_admin_ui.feature_path(@feature.name), notice: 'Variants updated successfully'
       rescue StandardError => e
-        Rails.logger.error "Magick: Error updating variants: #{e.message}" if defined?(Rails)
-        redirect_to magick_admin_ui.feature_path(@feature.name), alert: "Error updating variants: #{e.message}"
+        Rails.logger.error "Magick: Error updating variants for #{@feature.name}: #{e.class}: #{e.message}" if defined?(Rails)
+        redirect_to magick_admin_ui.feature_path(@feature.name), alert: 'Could not update variants — see server logs for details.'
       end
 
       private
@@ -315,11 +322,15 @@ module Magick
 
       def set_feature
         feature_name = params[:id].to_s
-        @feature = Magick.features[feature_name] || Magick[feature_name]
-        redirect_to magick_admin_ui.features_path, alert: 'Feature not found' unless @feature
+        # Do NOT fall back to Magick[feature_name] — that would lazily create
+        # and persist a brand-new feature from user-controlled input, letting
+        # an attacker (or even a stray crawler) pollute Redis/AR with arbitrary
+        # keys. Look up only registered features; 404 otherwise.
+        @feature = Magick.features[feature_name]
+        return if @feature
 
-        # Ensure we're working with the registered feature instance to keep state in sync
-        @feature = Magick.features[feature_name] if Magick.features.key?(feature_name)
+        redirect_to magick_admin_ui.features_path, alert: 'Feature not found'
+        nil
       end
     end
   end
