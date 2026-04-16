@@ -103,13 +103,24 @@ module Magick
 
       attr_reader :redis, :namespace
 
-      # Use SCAN instead of KEYS to avoid blocking Redis
+      # Use SCAN instead of KEYS to avoid blocking Redis.
+      # A mid-scan timeout would otherwise lose the cursor; retry once with
+      # exponential backoff before surfacing the error to the caller.
       def scan_keys
         pattern = "#{namespace}:*"
         keys = []
         cursor = '0'
+        retries = 0
         loop do
-          cursor, batch = redis.scan(cursor, match: pattern, count: 100)
+          begin
+            cursor, batch = redis.scan(cursor, match: pattern, count: 100)
+          rescue StandardError => e
+            raise if retries >= 1
+
+            retries += 1
+            sleep(0.05 * retries)
+            retry
+          end
           keys.concat(batch)
           break if cursor == '0'
         end
