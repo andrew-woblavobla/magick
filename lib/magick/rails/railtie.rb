@@ -125,6 +125,17 @@ if defined?(Rails)
             Magick.performance_metrics.enable_redis_tracking(enable: true)
           end
         end
+
+        # Terminate the Pub/Sub subscriber + async metrics thread on process exit.
+        # Without this, Ruby waits on the blocking `Redis#subscribe` call inside
+        # the subscriber thread and Puma/Rails shutdown stalls.
+        initializer 'magick.shutdown_hook' do
+          at_exit do
+            Magick.shutdown!
+          rescue StandardError
+            # Best-effort: never raise from an at_exit handler.
+          end
+        end
       end
     end
 

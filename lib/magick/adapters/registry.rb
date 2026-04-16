@@ -21,9 +21,32 @@ module Magick
         @last_reload_times = {} # Track last reload time per feature for debouncing
         @local_writes = {} # Track recent local writes to skip self-invalidation
         @reload_mutex = Mutex.new
+        @stopping = false
+        @shutdown_mutex = Mutex.new
         # Only start Pub/Sub subscriber if Redis is available
         # In memory-only mode, each process has isolated cache (no cross-process invalidation)
         start_cache_invalidation_subscriber if redis_adapter
+      end
+
+      # Gracefully terminate the Pub/Sub subscriber thread and its Redis connection.
+      # Without this, Ruby/Puma shutdown waits on the blocking `subscribe` call.
+      def shutdown(timeout: 5)
+        @shutdown_mutex.synchronize do
+          return if @stopping
+
+          @stopping = true
+        end
+
+        close_subscriber_connection(@subscriber)
+        terminate_subscriber_thread(@subscriber_thread, timeout)
+
+        @subscriber = nil
+        @subscriber_thread = nil
+        true
+      end
+
+      def stopping?
+        @stopping == true
       end
 
       def get(feature_name, key)
@@ -288,6 +311,32 @@ module Magick
 
       attr_reader :memory_adapter, :redis_adapter, :active_record_adapter, :circuit_breaker
 
+      # Signal the subscribe loop to return, then close the connection so any
+      # retry/reconnect attempt fails fast instead of sleeping for 5s.
+      def close_subscriber_connection(subscriber)
+        return unless subscriber
+
+        begin
+          subscriber.unsubscribe(CACHE_INVALIDATION_CHANNEL)
+        rescue StandardError
+          # connection may already be dead; fall through to close/kill
+        end
+
+        begin
+          subscriber.close
+        rescue StandardError
+          # ignore: best-effort close
+        end
+      end
+
+      def terminate_subscriber_thread(thread, timeout)
+        return unless thread
+        return if thread.join(timeout)
+
+        thread.kill
+        thread.join(1) # give it a moment to actually unwind
+      end
+
       # Record that this process just wrote a feature, so the subscriber
       # ignores its own Pub/Sub messages and doesn't revert the correct in-memory state.
       def record_local_write(feature_name)
@@ -421,9 +470,13 @@ module Magick
                            (defined?(Rails) && Rails.env.test?)
           return if is_rspec_error
 
+          # Stop cleanly during app shutdown instead of sleeping + retrying,
+          # which would keep the process alive and delay termination.
+          return if @stopping
+
           warn "Cache invalidation subscriber error: #{e.message}" if defined?(Rails) && Rails.env.development?
           sleep 5
-          retry
+          retry unless @stopping
         end
         @subscriber_thread.abort_on_exception = false
       end

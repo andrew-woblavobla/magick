@@ -265,6 +265,15 @@ module Magick
       @performance_metrics&.clear!
     end
 
+    # Gracefully terminate background threads (Redis Pub/Sub subscriber,
+    # async metrics processor) so the host process can exit promptly.
+    # Intended for use in Rails shutdown hooks, `at_exit`, or tests.
+    def shutdown!(timeout: 5)
+      safely_shutdown(@adapter_registry) { |r| r.shutdown(timeout: timeout) }
+      safely_shutdown(@performance_metrics, &:stop_async_processor)
+      true
+    end
+
     # Get default adapter registry (public method for use by other classes)
     def default_adapter_registry
       @default_adapter_registry ||= begin
@@ -279,5 +288,15 @@ module Magick
     end
 
     private
+
+    # Run a cleanup action on a collaborator, swallowing errors so that
+    # shutdown hooks (at_exit, Rails) never raise.
+    def safely_shutdown(collaborator)
+      return unless collaborator
+
+      yield(collaborator)
+    rescue StandardError
+      # Best-effort: termination paths must not raise.
+    end
   end
 end
