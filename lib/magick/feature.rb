@@ -310,7 +310,15 @@ module Magick
     end
 
     def exclude_ip_addresses(ip_addresses)
-      enable_targeting(:excluded_ip_addresses, Array(ip_addresses))
+      # excluded_ip_addresses is stored as a flat Array of strings; bypass the
+      # generic enable_targeting path whose "array type" branch stringifies the
+      # incoming array into a single element.
+      @targeting[:excluded_ip_addresses] ||= []
+      Array(ip_addresses).each do |ip|
+        str = ip.to_s
+        @targeting[:excluded_ip_addresses] << str unless @targeting[:excluded_ip_addresses].include?(str)
+      end
+      save_targeting
       true
     end
 
@@ -370,7 +378,15 @@ module Magick
     end
 
     def enable_for_ip_addresses(ip_addresses)
-      enable_targeting(:ip_address, Array(ip_addresses))
+      # ip_address is stored as a flat Array of strings; bypass the generic
+      # enable_targeting path whose "array type" branch stringifies the
+      # incoming array into a single '["x.y.z"]' entry.
+      @targeting[:ip_address] ||= []
+      Array(ip_addresses).each do |ip|
+        str = ip.to_s
+        @targeting[:ip_address] << str unless @targeting[:ip_address].include?(str)
+      end
+      save_targeting
       true
     end
 
@@ -645,13 +661,29 @@ module Magick
       {
         name: name,
         display_name: display_name,
+        group: group,
         type: type,
         status: status,
         value: stored_value,
         default_value: default_value,
         description: description,
-        targeting: targeting
+        targeting: targeting,
+        dependencies: (@dependencies || []).dup,
+        variants: variants_for_export
       }
+    end
+
+    def variants_for_export
+      return [] unless defined?(Magick::FeatureVariant)
+
+      raw = @variants || []
+      raw.map do |v|
+        if v.is_a?(Magick::FeatureVariant)
+          { name: v.name, weight: v.weight, value: v.value }
+        else
+          v
+        end
+      end
     end
 
     def save_targeting
