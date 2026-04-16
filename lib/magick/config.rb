@@ -317,9 +317,29 @@ module Magick
       config
     end
 
+    # Load a Magick configuration DSL file by path.
+    #
+    # SECURITY: This method evaluates the file's contents as Ruby via
+    # instance_eval. Never pass a path derived from HTTP input, ENV
+    # variables, build artifacts, or any other untrusted source — doing so
+    # is remote code execution. Callers must guarantee the path points at a
+    # file that lives inside the project tree (typical use:
+    # Rails.root.join('config/features.rb')).
+    #
+    # The path is resolved with File.realpath and must be inside the
+    # current working directory. An explicit opt-in env var
+    # (MAGICK_ALLOW_CONFIG_EVAL=1) is required to load paths outside CWD.
     def self.load_from_file(file_path)
+      resolved = File.realpath(file_path)
+      allow_outside_cwd = ENV['MAGICK_ALLOW_CONFIG_EVAL'] == '1'
+      unless allow_outside_cwd || resolved.start_with?(Dir.pwd)
+        raise SecurityError,
+              "Refusing to load Magick config from outside the project tree: #{resolved}. " \
+              'Set MAGICK_ALLOW_CONFIG_EVAL=1 to override (only if you trust the file).'
+      end
+
       config = Config.new
-      config.instance_eval(File.read(file_path), file_path)
+      config.instance_eval(File.read(resolved), resolved)
       config.apply!
       config
     end
