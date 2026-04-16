@@ -888,6 +888,43 @@ end
 - `:inactive` - Feature is disabled for everyone
 - `:deprecated` - Feature is deprecated (can be enabled with `allow_deprecated: true` in context)
 
+## Graceful Shutdown
+
+Magick starts a background Redis Pub/Sub subscriber thread for cross-process
+cache invalidation and an asynchronous metrics processor. Both must be
+stopped before the host process exits or Puma's graceful-stop will block on
+the still-running `Redis#subscribe` call.
+
+The Railtie registers an `at_exit` hook that calls `Magick.shutdown!`
+automatically, so most Rails apps don't need to do anything. In long-running
+non-Rails processes (rake tasks, CLI tools) call it explicitly:
+
+```ruby
+Magick.shutdown!          # default 5 second join timeout
+Magick.shutdown!(timeout: 1)  # more aggressive
+```
+
+Fork-based deployments (Puma workers with `preload_app`, Unicorn) are handled
+automatically: `config.to_prepare` calls `ensure_subscriber!` and
+`ensure_async_processor!` on every prepare cycle, so children that inherit
+stale parent threads start fresh. No action required from the host app.
+
+## Admin UI Security
+
+The Admin UI is CSRF-protected out of the box (`protect_from_forgery with:
+:exception`) and 404s on unknown feature IDs instead of auto-creating
+features from user-controlled `params[:id]`.
+
+Authentication is **opt-in** — if `Magick::AdminUI.config.require_role` is
+left `nil` the UI is reachable by anyone who can hit its routes. Always set
+it behind your app's auth:
+
+```ruby
+Magick::AdminUI.configure do |c|
+  c.require_role = ->(controller) { controller.current_user&.admin? }
+end
+```
+
 ## Testing
 
 Use the testing helpers in your RSpec tests:
