@@ -7,6 +7,12 @@ module Magick
 
       LOCAL_WRITE_TTL = 2.0 # seconds to ignore self-invalidation after a local write
 
+      # Accept only conservative feature identifiers coming off the wire.
+      # Anything outside this alphabet (newlines, spaces, Unicode punctuation,
+      # 200-char garbage) is a sign of a malformed or malicious publisher and
+      # must not be fed back into Magick.features[...] / feature.reload.
+      FEATURE_NAME_PATTERN = /\A[a-zA-Z0-9_\-.:]{1,120}\z/.freeze
+
       def initialize(memory_adapter, redis_adapter = nil, active_record_adapter: nil, circuit_breaker: nil,
                      async: false, primary: nil)
         @memory_adapter = memory_adapter
@@ -425,6 +431,16 @@ module Magick
           @subscriber.subscribe(CACHE_INVALIDATION_CHANNEL) do |on|
             on.message do |_channel, feature_name|
               feature_name_str = feature_name.to_s
+
+              # Reject malformed payloads before doing anything with them.
+              # A shared Redis DB is not a trust boundary — reject anything
+              # that isn't a plausible feature identifier.
+              unless FEATURE_NAME_PATTERN.match?(feature_name_str)
+                if defined?(Rails) && Rails.env.development?
+                  warn "Magick: ignoring malformed pubsub payload (#{feature_name_str.bytesize}B)"
+                end
+                next
+              end
 
               # Skip self-invalidation: if this process just wrote this feature,
               # memory already has the correct value. Reloading from Redis would
