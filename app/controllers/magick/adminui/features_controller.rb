@@ -87,11 +87,8 @@ module Magick
       end
 
       def enable
-        if @feature.enable
-          redirect_to magick_admin_ui.features_path, notice: 'Feature enabled'
-        else
-          redirect_to magick_admin_ui.feature_path(@feature.name), alert: 'Cannot enable feature — its dependencies must be enabled first'
-        end
+        @feature.enable
+        redirect_to magick_admin_ui.features_path, notice: 'Feature enabled'
       end
 
       def disable

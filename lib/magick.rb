@@ -31,7 +31,6 @@ require_relative 'magick/export_import'
 require_relative 'magick/versioning'
 require_relative 'magick/circuit_breaker'
 require_relative 'magick/testing_helpers'
-require_relative 'magick/feature_dependency'
 require_relative 'magick/documentation'
 # AdminUI is loaded conditionally via configuration
 # It is not loaded by default - must be enabled in Magick.configure

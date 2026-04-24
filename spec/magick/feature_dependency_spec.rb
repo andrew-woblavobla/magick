@@ -2,78 +2,65 @@
 
 require 'spec_helper'
 
-RSpec.describe Magick::FeatureDependency do
+RSpec.describe 'Feature dependencies (evaluation-only)' do
   before do
     Magick.register_feature(:parent)
     Magick.register_feature(:child)
+    Magick[:child].instance_variable_set(:@dependencies, ['parent'])
   end
 
-  describe '.add_dependency' do
-    it 'records a dependency between two features' do
-      described_class.add_dependency(:child, :parent)
-      deps = Magick[:child].instance_variable_get(:@dependencies) || []
-      expect(deps).to include('parent')
-    end
-
-    it 'is idempotent — adding the same dependency twice does not duplicate' do
-      2.times { described_class.add_dependency(:child, :parent) }
-      deps = Magick[:child].instance_variable_get(:@dependencies) || []
-      expect(deps.count('parent')).to eq(1)
-    end
-  end
-
-  describe '.remove_dependency' do
-    it 'removes a previously added dependency' do
-      described_class.add_dependency(:child, :parent)
-      described_class.remove_dependency(:child, :parent)
-      deps = Magick[:child].instance_variable_get(:@dependencies) || []
-      expect(deps).not_to include('parent')
-    end
-  end
-
-  describe '.check' do
-    it 'returns true when every dependency is enabled' do
-      Magick[:parent].enable
-      described_class.add_dependency(:child, :parent)
-      expect(described_class.check(:child)).to be true
-    end
-
-    it 'returns false when any dependency is disabled' do
+  describe '#enabled?' do
+    it 'returns false when any prerequisite is disabled' do
       Magick[:parent].disable
-      described_class.add_dependency(:child, :parent)
-      expect(described_class.check(:child)).to be false
-    end
-
-    it 'returns true for features with no dependencies' do
-      expect(described_class.check(:parent)).to be true
-    end
-  end
-
-  describe 'Feature#enable cascade' do
-    it 'refuses to enable when any parent is disabled' do
-      Magick[:parent].disable
-      Magick[:child].instance_variable_set(:@dependencies, ['parent'])
-      expect(Magick[:child].enable).to be false
+      Magick[:child].enable
       expect(Magick[:child].enabled?).to be false
     end
 
-    it 'enables when every parent is already enabled' do
+    it 'returns true when prerequisites are enabled and the feature is enabled' do
       Magick[:parent].enable
-      Magick[:child].instance_variable_set(:@dependencies, ['parent'])
-      expect(Magick[:child].enable).to be true
-      expect(Magick[:child].enabled?).to be true
-    end
-  end
-
-  describe 'Feature#disable cascade' do
-    it 'disables features that depend on the disabled parent' do
-      Magick[:parent].enable
-      Magick[:child].instance_variable_set(:@dependencies, ['parent'])
       Magick[:child].enable
       expect(Magick[:child].enabled?).to be true
+    end
+
+    it 'treats missing prerequisites as satisfied' do
+      Magick[:child].instance_variable_set(:@dependencies, ['does_not_exist'])
+      Magick[:child].enable
+      expect(Magick[:child].enabled?).to be true
+    end
+  end
+
+  describe '#enable' do
+    it 'allows enabling even when a prerequisite is disabled (state is configuration, not evaluation)' do
+      Magick[:parent].disable
+      expect(Magick[:child].enable).to be true
+      # Configured on, but evaluates off because prerequisite is off
+      expect(Magick[:child].enabled?).to be false
+    end
+
+    it 'begins evaluating true automatically once the prerequisite is re-enabled' do
+      Magick[:parent].disable
+      Magick[:child].enable
+      expect(Magick[:child].enabled?).to be false
+
+      Magick[:parent].enable
+      expect(Magick[:child].enabled?).to be true
+    end
+  end
+
+  describe '#disable' do
+    it 'does not cascade — disabling a prerequisite preserves the dependent feature’s configured state' do
+      Magick[:parent].enable
+      Magick[:child].enable
 
       Magick[:parent].disable
+
+      # Configured state preserved (value unchanged), but evaluates off.
+      expect(Magick[:child].get_value).to be true
       expect(Magick[:child].enabled?).to be false
+
+      # Restoring the prerequisite restores evaluation without re-toggling the dependent.
+      Magick[:parent].enable
+      expect(Magick[:child].enabled?).to be true
     end
 
     it 'does not touch unrelated features' do

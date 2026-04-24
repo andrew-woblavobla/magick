@@ -107,6 +107,11 @@ module Magick
       return false if status == :inactive
       return false if status == :deprecated && !context[:allow_deprecated]
 
+      # Dependency check: a feature with unmet prerequisites evaluates as disabled,
+      # regardless of its own configured state. Evaluation-only — prerequisite state
+      # is never written into this feature.
+      return false unless dependencies_satisfied?(context)
+
       # Fast path: skip targeting checks if targeting is empty (most common case)
       unless @_targeting_empty
         # Check exclusions FIRST — exclusions always take priority over inclusions
@@ -532,18 +537,6 @@ module Magick
     end
 
     def enable(user_id: nil)
-      # Check that all of this feature's own dependencies are enabled
-      # e.g. if checkout depends on payments, checkout can't be enabled until payments is
-      deps = @dependencies || []
-      unless deps.empty?
-        disabled_deps = deps.select do |dep_name|
-          dep_feature = Magick.features[dep_name.to_s] || Magick[dep_name]
-          dep_feature && !dep_feature.enabled?
-        end
-
-        return false unless disabled_deps.empty?
-      end
-
       # Clear all targeting to enable globally
       @targeting = {}
       save_targeting
@@ -588,9 +581,6 @@ module Magick
         registered = Magick.features[name]
         registered.instance_variable_set(:@targeting, {})
       end
-
-      # Cascade disable: disable all features that depend on this one
-      disable_dependent_features(user_id: user_id)
 
       # Rails 8+ event
       if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
@@ -1015,42 +1005,18 @@ module Magick
       context
     end
 
-    def disable_dependent_features(user_id: nil)
-      # Cascade-disable features that depend ON this feature.
-      # e.g. if checkout depends on payments, disabling payments also disables checkout.
-      dependents = find_dependent_features
-      return if dependents.empty?
+    def dependencies_satisfied?(context)
+      deps = @dependencies
+      return true if deps.nil? || deps.empty?
 
-      dependents.each do |dep_name|
-        dep_feature = Magick.features[dep_name.to_s] || Magick[dep_name]
-        next unless dep_feature
+      deps.all? do |dep_name|
+        dep_feature = Magick.features[dep_name.to_s] || Magick.features[dep_name.to_sym]
+        # Unknown dependency is treated as satisfied — matches prior behavior
+        # where missing features were skipped in cascade logic.
+        next true unless dep_feature
 
-        dep_feature.instance_variable_set(:@targeting, {})
-        dep_feature.save_targeting
-
-        case dep_feature.type
-        when :boolean
-          dep_feature.set_value(false, user_id: user_id)
-        when :string
-          dep_feature.set_value('', user_id: user_id)
-        when :number
-          dep_feature.set_value(0, user_id: user_id)
-        end
-
-        if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
-          Magick::Rails::Events.feature_disabled_globally(dep_name, user_id: user_id)
-        end
+        dep_feature.enabled?(context)
       end
-    end
-
-    def find_dependent_features
-      # Find all features that have this feature in their dependencies
-      dependent_features = []
-      Magick.features.each do |_name, feature|
-        feature_deps = feature.instance_variable_get(:@dependencies) || []
-        dependent_features << feature.name if feature_deps.include?(name.to_s) || feature_deps.include?(name.to_sym)
-      end
-      dependent_features
     end
 
     def excluded?(context)
