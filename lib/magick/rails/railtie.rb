@@ -132,6 +132,18 @@ if defined?(Rails)
           end
         end
 
+        # Revive the Pub/Sub subscriber in forked workers. `config.to_prepare`
+        # only re-runs per request in development; in production it runs once at
+        # boot, BEFORE Puma forks its workers under `preload_app!`. Those workers
+        # inherit a dead subscriber thread and would never receive cross-process
+        # cache invalidations. This middleware calls `ensure_subscriber!` (a
+        # pid-guarded no-op once the subscriber is running) on each request, so a
+        # forked worker starts its own subscriber on its first request. In
+        # single-mode Puma (no fork) it is effectively free.
+        initializer 'magick.subscriber_middleware' do |app|
+          app.middleware.use Magick::Rails::SubscriberMiddleware
+        end
+
         # Terminate the Pub/Sub subscriber + async metrics thread on process exit.
         # Without this, Ruby waits on the blocking `Redis#subscribe` call inside
         # the subscriber thread and Puma/Rails shutdown stalls.
@@ -142,6 +154,26 @@ if defined?(Rails)
             # Best-effort: never raise from an at_exit handler.
           end
         end
+      end
+    end
+
+    # Ensures each process (including Puma workers forked under `preload_app!`)
+    # has a live Redis Pub/Sub subscriber for cross-process cache invalidation.
+    # `ensure_subscriber!` returns immediately once `@owner_pid == Process.pid`,
+    # so the per-request cost is a single pid comparison after the first call.
+    class SubscriberMiddleware
+      def initialize(app)
+        @app = app
+      end
+
+      def call(env)
+        begin
+          registry = Magick.adapter_registry
+          registry.ensure_subscriber! if registry.respond_to?(:ensure_subscriber!)
+        rescue StandardError
+          # Best-effort: never break a request over subscriber bookkeeping.
+        end
+        @app.call(env)
       end
     end
 

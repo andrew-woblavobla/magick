@@ -24,7 +24,6 @@ module Magick
         @subscriber_thread = nil
         @subscriber = nil
         @refresh_thread = nil
-        @last_reload_times = {} # Track last reload time per feature for debouncing
         @local_writes = {} # Track recent local writes to skip self-invalidation
         @reload_mutex = Mutex.new
         @stopping = false
@@ -217,6 +216,39 @@ module Magick
         {}
       end
 
+      # Read a feature's complete data straight from the shared, authoritative
+      # backend — ActiveRecord first (it is written synchronously on every
+      # set/set_all_data), then Redis — bypassing this process's local memory
+      # cache, and refresh memory with the result.
+      #
+      # The Admin UI uses this so a toggle is reflected immediately on whichever
+      # process/container serves the (load-balanced) request after the write,
+      # instead of rendering this process's possibly-stale memory cache while it
+      # waits for Pub/Sub invalidation to arrive.
+      def authoritative_get_all_data(feature_name)
+        data = read_from_source(feature_name)
+        if data && !data.empty?
+          memory_adapter&.set_all_data(feature_name, data)
+          return data
+        end
+
+        # Source unavailable (Redis/AR down, or feature absent there) — fall back
+        # to whatever this process already has rather than wiping a usable cache.
+        memory_adapter ? memory_adapter.get_all_data(feature_name) : {}
+      end
+
+      # Bulk variant of #authoritative_get_all_data: refresh the local memory
+      # cache for EVERY feature from the shared backend in 1-2 queries. Returns
+      # the loaded data. Used by the Admin UI index so the full list reflects
+      # authoritative state regardless of which container serves it.
+      def refresh_all_from_source
+        data = load_all_from_source
+        if memory_adapter && !data.empty?
+          data.each { |feature_name, feature_data| memory_adapter.set_all_data(feature_name, feature_data) }
+        end
+        data
+      end
+
       # Bulk load ALL features into memory cache in minimal queries.
       # Call this after configuration to warm the cache.
       def preload!
@@ -371,6 +403,101 @@ module Magick
         thread
       end
 
+      # Handle one cache-invalidation message: refresh this process's view of
+      # the feature from the shared backend. Returns true when the message was
+      # acted on, false when it was rejected/skipped (used by specs).
+      #
+      # Every VALID, non-self message triggers a full-state reload. We do NOT
+      # debounce by a time window: a single enable/disable emits two publishes
+      # (targeting then value), and dropping the second would leave this process
+      # holding the old value until its memory TTL expires. Each reload reads the
+      # feature's COMPLETE current state, so processing every message is
+      # idempotent, and feature-flag writes are admin-rate — redundant reloads
+      # are cheap and rare.
+      def process_cache_invalidation(feature_name)
+        feature_name_str = feature_name.to_s
+
+        # Reject malformed payloads before doing anything with them. A shared
+        # Redis DB is not a trust boundary — reject anything that isn't a
+        # plausible feature identifier.
+        unless FEATURE_NAME_PATTERN.match?(feature_name_str)
+          warn "Magick: ignoring malformed pubsub payload (#{feature_name_str.bytesize}B)" if rails_development?
+          return false
+        end
+
+        # Skip self-invalidation: if this process just wrote this feature, memory
+        # already has the correct value. Reloading would revert it to stale data
+        # (especially with async writes that publish after the Redis write).
+        if local_write?(feature_name_str)
+          Rails.logger.debug "Magick: Skipping self-invalidation for '#{feature_name_str}'" if rails_development?
+          return false
+        end
+
+        # Invalidate the local memory cache, then reload the registered feature
+        # instance from the shared backend (the publisher writes Redis/AR BEFORE
+        # publishing, so fresh data is available by now).
+        memory_adapter&.delete(feature_name_str)
+        if defined?(Magick) && Magick.respond_to?(:features) && Magick.features.key?(feature_name_str)
+          feature = Magick.features[feature_name_str]
+          if feature.respond_to?(:reload)
+            feature.reload
+            Rails.logger.debug "Magick: Reloaded '#{feature_name_str}' after cache invalidation" if rails_development?
+          end
+        end
+        true
+      end
+
+      def rails_development?
+        defined?(Rails) && Rails.respond_to?(:env) && Rails.env.development?
+      end
+
+      # Read a feature's full data from the shared, authoritative backend,
+      # skipping the local memory cache. ActiveRecord is preferred because it is
+      # written synchronously on every set (Redis may lag under async_updates).
+      def read_from_source(feature_name)
+        if active_record_adapter
+          begin
+            data = active_record_adapter.get_all_data(feature_name)
+            return data if data && !data.empty?
+          rescue StandardError, AdapterError
+            # fall through to Redis
+          end
+        end
+
+        if redis_adapter
+          begin
+            return circuit_breaker.call { redis_adapter.get_all_data(feature_name) }
+          rescue StandardError, AdapterError
+            nil
+          end
+        end
+
+        nil
+      end
+
+      # Bulk read ALL features from the shared, authoritative backend, skipping
+      # the local memory cache. AR preferred (synchronous), Redis fallback.
+      def load_all_from_source
+        if active_record_adapter
+          begin
+            data = active_record_adapter.load_all_features_data
+            return data if data && !data.empty?
+          rescue StandardError, AdapterError
+            # fall through to Redis
+          end
+        end
+
+        if redis_adapter
+          begin
+            return circuit_breaker.call { redis_adapter.load_all_features_data } || {}
+          rescue StandardError, AdapterError
+            {}
+          end
+        end
+
+        {}
+      end
+
       # Record that this process just wrote a feature, so the subscriber
       # ignores its own Pub/Sub messages and doesn't revert the correct in-memory state.
       def record_local_write(feature_name)
@@ -378,7 +505,7 @@ module Magick
           @local_writes[feature_name.to_s] = Time.now.to_f
           # Also sweep stale tracking entries on the write path — a write-heavy
           # process that rarely reads would otherwise never trigger cleanup,
-          # letting @local_writes and @last_reload_times grow unboundedly.
+          # letting @local_writes grow unboundedly.
           cleanup_stale_tracking_entries
         end
       end
@@ -408,7 +535,6 @@ module Magick
 
         @last_tracking_cleanup = now
         @local_writes.delete_if { |_, wrote_at| (now - wrote_at) >= LOCAL_WRITE_TTL }
-        @last_reload_times.delete_if { |_, reload_at| (now - reload_at) >= 10.0 }
       end
 
       # Start a background thread to listen for cache invalidation messages
@@ -442,56 +568,7 @@ module Magick
 
           @subscriber.subscribe(CACHE_INVALIDATION_CHANNEL) do |on|
             on.message do |_channel, feature_name|
-              feature_name_str = feature_name.to_s
-
-              # Reject malformed payloads before doing anything with them.
-              # A shared Redis DB is not a trust boundary — reject anything
-              # that isn't a plausible feature identifier.
-              unless FEATURE_NAME_PATTERN.match?(feature_name_str)
-                if defined?(Rails) && Rails.env.development?
-                  warn "Magick: ignoring malformed pubsub payload (#{feature_name_str.bytesize}B)"
-                end
-                next
-              end
-
-              # Skip self-invalidation: if this process just wrote this feature,
-              # memory already has the correct value. Reloading from Redis would
-              # revert it to stale data (especially with async writes).
-              if local_write?(feature_name_str)
-                if defined?(Rails) && Rails.env.development?
-                  Rails.logger.debug "Magick: Skipping self-invalidation for '#{feature_name_str}'"
-                end
-                next
-              end
-
-              # Debounce: only reload if we haven't reloaded this feature in the last 100ms
-              should_reload = @reload_mutex.synchronize do
-                last_reload = @last_reload_times[feature_name_str]
-                now = Time.now.to_f
-                if last_reload.nil? || (now - last_reload) > 0.1 # 100ms debounce
-                  @last_reload_times[feature_name_str] = now
-                  true
-                else
-                  false
-                end
-              end
-
-              next unless should_reload
-
-              # Invalidate memory cache for this feature
-              memory_adapter.delete(feature_name_str) if memory_adapter
-
-              # Reload the feature instance from the adapter (Redis should have fresh data
-              # since remote processes publish AFTER their Redis write completes)
-              if defined?(Magick) && Magick.features.key?(feature_name_str)
-                feature = Magick.features[feature_name_str]
-                if feature.respond_to?(:reload)
-                  feature.reload
-                  if defined?(Rails) && Rails.env.development?
-                    Rails.logger.debug "Magick: Reloaded feature '#{feature_name_str}' after cache invalidation"
-                  end
-                end
-              end
+              process_cache_invalidation(feature_name)
             rescue StandardError => e
               # Log error but don't crash the subscriber thread
               # Skip logging RSpec mock errors in test environments

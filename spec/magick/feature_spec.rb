@@ -969,4 +969,29 @@ RSpec.describe Magick::Feature do
       end
     end
   end
+
+  # Read-your-writes for the Admin UI across processes/containers: when another
+  # process writes a feature straight to the shared backend, this process's
+  # local memory cache is stale until Pub/Sub catches up. reload_from_source!
+  # reads the shared backend directly so the Admin UI reflects the change now.
+  describe '#reload_from_source!' do
+    let(:memory_adapter) { Magick::Adapters::Memory.new }
+    let(:source_adapter) { Magick::Adapters::Memory.new }
+    let(:adapter_registry) do
+      Magick::Adapters::Registry.new(memory_adapter, active_record_adapter: source_adapter)
+    end
+    let(:feature) { described_class.new(:flag, adapter_registry, type: :boolean, default_value: false) }
+
+    it 'reflects state written to the shared backend by another process' do
+      expect(feature.enabled?).to be false
+
+      # Another container enables the flag, writing only to the shared backend.
+      source_adapter.set_all_data(:flag, { 'value' => true, 'type' => 'boolean',
+                                           'status' => 'active', 'targeting' => {} })
+
+      feature.reload_from_source!
+
+      expect(feature.enabled?).to be true
+    end
+  end
 end

@@ -904,10 +904,14 @@ Magick.shutdown!          # default 5 second join timeout
 Magick.shutdown!(timeout: 1)  # more aggressive
 ```
 
-Fork-based deployments (Puma workers with `preload_app`, Unicorn) are handled
-automatically: `config.to_prepare` calls `ensure_subscriber!` and
-`ensure_async_processor!` on every prepare cycle, so children that inherit
-stale parent threads start fresh. No action required from the host app.
+Fork-based deployments (Puma workers with `preload_app!`, Unicorn) are handled
+automatically. A Rack middleware (`Magick::Rails::SubscriberMiddleware`) calls
+`ensure_subscriber!` on each request — a pid-guarded no-op once the subscriber
+is running — so a worker that inherited a dead parent thread starts its own
+subscriber on its first request. This matters because in production
+`config.to_prepare` runs **once at boot** (before workers fork), not per
+request, so it cannot revive the subscriber inside forked workers on its own.
+No action required from the host app.
 
 ## Admin UI Security
 

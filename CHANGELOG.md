@@ -2,6 +2,35 @@
 
 All notable changes to `magick-feature-flags` are documented in this file.
 
+## 1.4.3 — 2026-06-01
+
+Fixes the multi-process/multi-container "toggle doesn't take effect until I
+click again" bug in the Admin UI.
+
+### Correctness
+- **Admin UI now renders authoritative state.** In a load-balanced deployment
+  the enable/disable POST and the redirected GET land on different
+  processes/containers, so the process rendering the page could show its own
+  stale in-memory cache until Pub/Sub caught up. `index`/`show`/`edit` now read
+  straight from the shared backend (ActiveRecord → Redis) via the new
+  `Adapters::Registry#authoritative_get_all_data` / `#refresh_all_from_source`
+  and `Feature#reload_from_source!`, bypassing the local memory cache.
+- **Cross-process cache invalidation no longer drops the final state.** A single
+  `enable`/`disable` emits two Pub/Sub publishes (targeting, then value); the
+  old 100 ms reload debounce dropped the second, leaving other processes holding
+  the old value until their memory TTL (up to hours) expired. The subscriber now
+  reloads on every valid invalidation (`Registry#process_cache_invalidation`);
+  each reload reads complete state, so it stays idempotent.
+
+### Reliability
+- **Forked workers self-heal their Pub/Sub subscriber.** Under Puma
+  `preload_app!`, workers inherit a dead subscriber thread and — in production —
+  `config.to_prepare` does not re-run to revive it. A new Rack middleware
+  (`Magick::Rails::SubscriberMiddleware`) calls the pid-guarded
+  `ensure_subscriber!` per request, so each worker starts its own subscriber on
+  first request. Near-free no-op in single-mode Puma. README corrected
+  accordingly.
+
 ## 1.4.1 — 2026-04-16
 
 Follow-up to 1.4.0 closing the nine acknowledged audit misses.

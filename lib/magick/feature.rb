@@ -624,6 +624,15 @@ module Magick
       true
     end
 
+    # Reload feature state from the shared, authoritative backend (ActiveRecord/
+    # Redis), bypassing this process's local in-process memory cache. Used by the
+    # Admin UI so a toggle performed on another process/container is reflected
+    # immediately, without waiting for Pub/Sub cache invalidation to arrive.
+    def reload_from_source!
+      adapter_registry.authoritative_get_all_data(name) if adapter_registry.respond_to?(:authoritative_get_all_data)
+      reload
+    end
+
     # Reload feature state from adapter (useful when feature is changed externally)
     def reload
       load_from_adapter

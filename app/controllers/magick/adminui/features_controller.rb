@@ -15,6 +15,13 @@ module Magick
       layout 'application'
       before_action :authenticate_admin!
       before_action :set_feature, only: %i[show edit update enable disable enable_for_user enable_for_role disable_for_role update_targeting update_variants]
+      # Render the TRUE current state, not this process's local cache. In a
+      # multi-process / multi-container deployment the enable/disable POST and
+      # the redirected GET are load-balanced to different processes, so the
+      # process rendering the page may hold a stale memory copy until Pub/Sub
+      # catches up. These refresh from the shared backend before rendering.
+      before_action :refresh_all_features_from_source, only: %i[index]
+      before_action :refresh_feature_from_source, only: %i[show edit]
 
       # Make route helpers available in views via magick_admin_ui helper
       helper_method :magick_admin_ui, :available_roles, :available_tags, :partially_enabled?
@@ -332,6 +339,26 @@ module Magick
       # a 500 with a NoMethodError stack trace.
       def hash_like?(obj)
         obj.is_a?(Hash) || (defined?(ActionController::Parameters) && obj.is_a?(ActionController::Parameters))
+      end
+
+      # Refresh every registered feature from the shared backend so the index
+      # reflects authoritative state regardless of which container serves it.
+      # Best-effort: a backend hiccup must never 500 the admin list.
+      def refresh_all_features_from_source
+        registry = Magick.adapter_registry
+        registry.refresh_all_from_source if registry.respond_to?(:refresh_all_from_source)
+        Magick.features.each_value { |f| f.reload if f.respond_to?(:reload) }
+      rescue StandardError => e
+        Rails.logger.warn "Magick: admin source refresh failed: #{e.class}: #{e.message}" if defined?(Rails)
+      end
+
+      # Refresh the single feature being viewed/edited from the shared backend.
+      def refresh_feature_from_source
+        return unless @feature
+
+        @feature.reload_from_source! if @feature.respond_to?(:reload_from_source!)
+      rescue StandardError => e
+        Rails.logger.warn "Magick: admin source refresh failed: #{e.class}: #{e.message}" if defined?(Rails)
       end
 
       def set_feature
