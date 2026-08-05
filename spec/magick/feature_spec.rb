@@ -994,4 +994,79 @@ RSpec.describe Magick::Feature do
       expect(feature.enabled?).to be true
     end
   end
+
+  describe '#as_json' do
+    it 'always includes the targeting key, {} when no targeting is set' do
+      json = feature.as_json
+      expect(json).to include('name' => 'test_feature', 'type' => 'boolean', 'status' => 'active')
+      expect(json['targeting']).to eq({})
+    end
+
+    it 'emits arrays of strings for list rules and floats for percentages' do
+      feature.enable_for_user(3)
+      feature.enable_percentage_of_users(50)
+
+      expect(feature.as_json['targeting']).to eq('user' => ['3'], 'percentage_users' => 50.0)
+    end
+
+    it 'keeps variants out of the wire targeting object' do
+      feature.set_variants([{ name: 'a', weight: 100, value: 'x' }])
+
+      json = feature.as_json
+      expect(json['targeting']).to eq({})
+      expect(json['variants'].first).to include('name' => 'a')
+    end
+  end
+
+  describe '#replace_targeting' do
+    it 'replaces the entire targeting state — absent keys are removed' do
+      feature.enable_for_role('admin')
+      feature.enable_percentage_of_users(25)
+
+      feature.replace_targeting('user' => [3, 7])
+
+      expect(feature.targeting).to eq(user: %w[3 7])
+    end
+
+    it 'clears all targeting when given {}' do
+      feature.enable_for_user(3)
+
+      feature.replace_targeting({})
+
+      expect(feature.targeting).to eq({})
+      expect(feature.as_json['targeting']).to eq({})
+    end
+
+    it 'persists the replaced state to the adapter' do
+      feature.replace_targeting(user: [3])
+
+      reloaded = described_class.new(:test_feature, adapter_registry, type: :boolean, default_value: false)
+      expect(reloaded.targeting).to eq(user: ['3'])
+    end
+
+    it 'preserves internal variants across a replace' do
+      feature.set_variants([{ name: 'a', weight: 100, value: 'x' }])
+
+      feature.replace_targeting({})
+
+      expect(feature.as_json['variants']).not_to be_empty
+      expect(feature.targeting[:variants]).not_to be_nil
+    end
+
+    it 'applies nothing when any part of the payload is invalid' do
+      feature.enable_for_user(3)
+
+      expect { feature.replace_targeting(user: [7], percentage_users: 150) }
+        .to raise_error(Magick::InvalidTargetingError)
+
+      expect(feature.targeting).to eq(user: ['3'])
+    end
+
+    it 'affects evaluation immediately' do
+      feature.replace_targeting(user: [3])
+
+      expect(feature.enabled?(user_id: 3)).to be true
+      expect(feature.enabled?(user_id: 4)).to be false
+    end
+  end
 end

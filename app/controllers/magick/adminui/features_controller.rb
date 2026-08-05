@@ -42,8 +42,7 @@ module Magick
       end
 
       def partially_enabled?(feature)
-        targeting = feature.instance_variable_get(:@targeting) || {}
-        targeting.any? && !targeting.empty?
+        (feature.targeting || {}).any?
       end
 
       def index
@@ -132,7 +131,6 @@ module Magick
       end
 
       def update_targeting
-        # Handle targeting updates from form
         targeting_params = params[:targeting] || {}
         unless hash_like?(targeting_params)
           redirect_to magick_admin_ui.feature_path(@feature.name), alert: 'Invalid targeting payload.'
@@ -143,146 +141,13 @@ module Magick
         feature_name = @feature.name.to_s
         @feature = Magick.features[feature_name] if Magick.features.key?(feature_name)
 
-        current_targeting = @feature.instance_variable_get(:@targeting) || {}
-
-        # Handle roles - always clear existing and set new ones
-        # Rails checkboxes don't send unchecked values, so we need to check what was sent
-        current_roles = current_targeting[:role].is_a?(Array) ? current_targeting[:role] : (current_targeting[:role] ? [current_targeting[:role]] : [])
-        selected_roles = Array(targeting_params[:roles]).reject(&:blank?)
-
-        # Disable roles that are no longer selected
-        (current_roles - selected_roles).each do |role|
-          @feature.disable_for_role(role) if role.present?
-        end
-
-        # Enable newly selected roles
-        (selected_roles - current_roles).each do |role|
-          @feature.enable_for_role(role) if role.present?
-        end
-
-        # Handle tags - always clear existing and set new ones
-        # Rails checkboxes don't send unchecked values, so we need to check what was sent
-        current_tags = current_targeting[:tag].is_a?(Array) ? current_targeting[:tag] : (current_targeting[:tag] ? [current_targeting[:tag]] : [])
-        selected_tags = Array(targeting_params[:tags]).reject(&:blank?)
-
-        # Disable tags that are no longer selected
-        (current_tags - selected_tags).each do |tag|
-          @feature.disable_for_tag(tag) if tag.present?
-        end
-
-        # Enable newly selected tags
-        (selected_tags - current_tags).each do |tag|
-          @feature.enable_for_tag(tag) if tag.present?
-        end
-
-        # Handle user IDs - replace existing user targeting
-        if targeting_params[:user_ids].present?
-          user_ids = targeting_params[:user_ids].split(',').map(&:strip).reject(&:blank?)
-          current_user_ids = current_targeting[:user].is_a?(Array) ? current_targeting[:user] : (current_targeting[:user] ? [current_targeting[:user]] : [])
-
-          # Disable users that are no longer in the list
-          (current_user_ids - user_ids).each do |user_id|
-            @feature.disable_for_user(user_id) if user_id.present?
-          end
-
-          # Enable new users
-          (user_ids - current_user_ids).each do |user_id|
-            @feature.enable_for_user(user_id) if user_id.present?
-          end
-        elsif targeting_params.key?(:user_ids) && targeting_params[:user_ids].blank?
-          # Clear all user targeting if field was cleared
-          current_user_ids = current_targeting[:user].is_a?(Array) ? current_targeting[:user] : (current_targeting[:user] ? [current_targeting[:user]] : [])
-          current_user_ids.each do |user_id|
-            @feature.disable_for_user(user_id) if user_id.present?
-          end
-        end
-
-        # Handle percentage of users
-        percentage_users_value = targeting_params[:percentage_users]
-        if percentage_users_value.present? && percentage_users_value.to_s.strip != ''
-          percentage = percentage_users_value.to_f
-          if percentage > 0 && percentage <= 100
-            result = @feature.enable_percentage_of_users(percentage)
-            Rails.logger.debug "Magick: Enabled percentage_users #{percentage} for #{@feature.name}: #{result}" if defined?(Rails)
-          else
-            # Value is 0 or invalid - disable
-            @feature.disable_percentage_of_users
-          end
-        else
-          # Field is empty - disable if it was previously set
-          @feature.disable_percentage_of_users if current_targeting[:percentage_users]
-        end
-
-        # Handle percentage of requests
-        percentage_requests_value = targeting_params[:percentage_requests]
-        if percentage_requests_value.present? && percentage_requests_value.to_s.strip != ''
-          percentage = percentage_requests_value.to_f
-          if percentage > 0 && percentage <= 100
-            result = @feature.enable_percentage_of_requests(percentage)
-            Rails.logger.debug "Magick: Enabled percentage_requests #{percentage} for #{@feature.name}: #{result}" if defined?(Rails)
-          else
-            # Value is 0 or invalid - disable
-            @feature.disable_percentage_of_requests
-          end
-        else
-          # Field is empty - disable if it was previously set
-          @feature.disable_percentage_of_requests if current_targeting[:percentage_requests]
-        end
-
-        # Handle excluded user IDs
-        if targeting_params[:excluded_user_ids].present?
-          excluded_user_ids = targeting_params[:excluded_user_ids].split(',').map(&:strip).reject(&:blank?)
-          current_excluded_users = current_targeting[:excluded_users].is_a?(Array) ? current_targeting[:excluded_users] : (current_targeting[:excluded_users] ? [current_targeting[:excluded_users]] : [])
-
-          (current_excluded_users - excluded_user_ids).each do |user_id|
-            @feature.remove_user_exclusion(user_id) if user_id.present?
-          end
-
-          (excluded_user_ids - current_excluded_users).each do |user_id|
-            @feature.exclude_user(user_id) if user_id.present?
-          end
-        elsif targeting_params.key?(:excluded_user_ids) && targeting_params[:excluded_user_ids].blank?
-          current_excluded_users = current_targeting[:excluded_users].is_a?(Array) ? current_targeting[:excluded_users] : (current_targeting[:excluded_users] ? [current_targeting[:excluded_users]] : [])
-          current_excluded_users.each do |user_id|
-            @feature.remove_user_exclusion(user_id) if user_id.present?
-          end
-        end
-
-        # Handle excluded roles
-        current_excluded_roles = current_targeting[:excluded_roles].is_a?(Array) ? current_targeting[:excluded_roles] : (current_targeting[:excluded_roles] ? [current_targeting[:excluded_roles]] : [])
-        selected_excluded_roles = Array(targeting_params[:excluded_roles]).reject(&:blank?)
-
-        (current_excluded_roles - selected_excluded_roles).each do |role|
-          @feature.remove_role_exclusion(role) if role.present?
-        end
-
-        (selected_excluded_roles - current_excluded_roles).each do |role|
-          @feature.exclude_role(role) if role.present?
-        end
-
-        # Handle excluded tags
-        current_excluded_tags = current_targeting[:excluded_tags].is_a?(Array) ? current_targeting[:excluded_tags] : (current_targeting[:excluded_tags] ? [current_targeting[:excluded_tags]] : [])
-        selected_excluded_tags = Array(targeting_params[:excluded_tags]).reject(&:blank?)
-
-        (current_excluded_tags - selected_excluded_tags).each do |tag|
-          @feature.remove_tag_exclusion(tag) if tag.present?
-        end
-
-        (selected_excluded_tags - current_excluded_tags).each do |tag|
-          @feature.exclude_tag(tag) if tag.present?
-        end
-
-        # After all targeting updates, ensure we're using the registered feature instance
-        # and reload it to get the latest state from adapter
-        feature_name = @feature.name.to_s
-        if Magick.features.key?(feature_name)
-          @feature = Magick.features[feature_name]
-          @feature.reload
-        else
-          @feature.reload
-        end
+        # One declarative write: one audit entry + one version per submit.
+        @feature.replace_targeting(desired_targeting_from_form(targeting_params))
+        @feature.reload
 
         redirect_to magick_admin_ui.feature_path(@feature.name), notice: 'Targeting updated successfully'
+      rescue Magick::InvalidTargetingError => e
+        redirect_to magick_admin_ui.feature_path(@feature.name), alert: "Invalid targeting: #{e.message}"
       rescue StandardError => e
         Rails.logger.error "Magick: Error updating targeting for #{@feature.name}: #{e.class}: #{e.message}\n#{e.backtrace.first(5).join("\n")}" if defined?(Rails)
         redirect_to magick_admin_ui.feature_path(@feature.name), alert: 'Could not update targeting — see server logs for details.'
@@ -322,7 +187,55 @@ module Magick
         redirect_to magick_admin_ui.feature_path(@feature.name), alert: 'Could not update variants — see server logs for details.'
       end
 
+      # Targeting rules the edit form has no fields for. They are carried over
+      # from the current state on every submit so a form save can never
+      # silently destroy them. (:variants is preserved by replace_targeting
+      # itself.)
+      FORM_UNMANAGED_TARGETING_KEYS = %i[
+        group excluded_groups ip_address excluded_ip_addresses
+        date_range custom_attributes complex_conditions
+      ].freeze
+
       private
+
+      # Build the full desired targeting state from the edit form. Checkbox
+      # groups (roles/tags and their exclusions) and the percentage fields are
+      # authoritative on every submit — unchecked/blank means "remove the
+      # rule". The comma-separated user lists are only authoritative when
+      # their field was actually sent. Percentages stay lenient here (blank
+      # or out-of-range clears the rule, as the form always behaved) —
+      # strict validation is for API callers of replace_targeting.
+      def desired_targeting_from_form(targeting_params)
+        current = @feature.targeting || {}
+        desired = {}
+        FORM_UNMANAGED_TARGETING_KEYS.each { |key| desired[key] = current[key] if current.key?(key) }
+
+        desired[:role] = Array(targeting_params[:roles]).reject(&:blank?)
+        desired[:tag] = Array(targeting_params[:tags]).reject(&:blank?)
+        desired[:excluded_roles] = Array(targeting_params[:excluded_roles]).reject(&:blank?)
+        desired[:excluded_tags] = Array(targeting_params[:excluded_tags]).reject(&:blank?)
+
+        desired[:user] = csv_ids(targeting_params, :user_ids, current[:user])
+        desired[:excluded_users] = csv_ids(targeting_params, :excluded_user_ids, current[:excluded_users])
+
+        desired[:percentage_users] = form_percentage(targeting_params[:percentage_users])
+        desired[:percentage_requests] = form_percentage(targeting_params[:percentage_requests])
+
+        desired.compact
+      end
+
+      def csv_ids(targeting_params, field, current_value)
+        return Array(current_value) unless targeting_params.key?(field)
+
+        targeting_params[field].to_s.split(',').map(&:strip).reject(&:blank?)
+      end
+
+      def form_percentage(raw)
+        return nil if raw.blank?
+
+        percentage = raw.to_f
+        percentage.positive? && percentage <= 100 ? percentage : nil
+      end
 
       # Resolve the acting admin via the configurable AdminUI hook and run the
       # action inside Magick.with_actor. A failing resolver only costs

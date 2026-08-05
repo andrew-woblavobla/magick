@@ -28,6 +28,15 @@ RSpec.describe 'Change recording' do
       expect(entry.changes[:value][:to]).to be true
     end
 
+    it 'logs replace_targeting exactly once, with wire-format before/after' do
+      Magick[:cr_demo].replace_targeting(user: [1], percentage_users: 50)
+
+      entries = audit.entries(feature_name: :cr_demo)
+      expect(entries.map(&:action)).to eq(['replace_targeting'])
+      expect(entries.last.changes[:targeting][:to]).to eq('user' => ['1'], 'percentage_users' => 50.0)
+      expect(Magick.versioning.get_versions(:cr_demo).length).to eq(1)
+    end
+
     it 'logs targeting mutations' do
       Magick[:cr_demo].enable_for_user(42)
       Magick[:cr_demo].exclude_user(43)

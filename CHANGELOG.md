@@ -2,6 +2,44 @@
 
 All notable changes to `magick-feature-flags` are documented in this file.
 
+## 1.6.0 — 2026-08-05
+
+Wire targeting contract for control-plane APIs. The gem now ships the two
+primitives a flag-management endpoint needs — a canonical serializer and a
+wholesale targeting write — while the host app keeps routes and auth.
+
+### Features
+- **`Feature#as_json`** — canonical wire-format flag payload (string keys).
+  The `"targeting"` key is **always present** (`{}` = no targeting), list
+  rules are arrays of strings, percentages are floats, and the internal
+  `:variants` entry never appears inside `targeting`. Works directly with
+  `render json: feature` / `render json: Magick.features.values`.
+- **`Feature#replace_targeting(payload)`** — wholesale, declarative
+  targeting write: the payload is the new state, keys absent from it are
+  removed, `{}` clears everything. Lenient input (string/symbol keys, plural
+  aliases, scalars for lists, numeric strings), strict validation: unknown
+  keys or invalid values raise the new `Magick::InvalidTargetingError`
+  before anything is applied (all-or-nothing) — map it to a 422. Records one
+  audit entry and one version snapshot per call. A/B variants survive the
+  replace untouched.
+- **`Magick::TargetingPayload`** — the shared normalizer/serializer behind
+  both primitives; `Feature#targeting` is now a public reader.
+
+### Changes
+- **Admin UI targeting form** submits through `replace_targeting`: one
+  `replace_targeting` audit entry + one version per save, instead of one
+  entry per changed rule. Rules the form has no fields for (IP, date range,
+  custom attributes, complex conditions, group targeting) are carried over
+  unchanged.
+- **`Magick.import`** applies targeting through `replace_targeting` as well:
+  imported targeting now replaces the feature's existing targeting wholesale,
+  and invalid targeting payloads raise `ImportError` instead of being
+  silently applied or skipped. Exports from older gem versions (which leaked
+  `variants` into the targeting hash) still import cleanly.
+- **`as_json` variants** read the authoritative store
+  (`targeting[:variants]`), so the wire `variants` list is populated
+  (`to_h`'s legacy top-level `variants` was always empty).
+
 ## 1.5.0 — 2026-08-05
 
 Every save now creates a version, and the audit log covers every mutation.

@@ -103,55 +103,18 @@ module Magick
       feature.set_value(value) if !value.nil? && !(value.is_a?(String) && value.empty?)
     end
 
-    # rubocop:disable Metrics/MethodLength
-    # rubocop:disable Metrics/CyclomaticComplexity
     def self.apply_targeting(feature, targeting)
-      targeting.each do |type, values|
-        case type.to_sym
-        when :user, :users
-          Array(values).each { |v| feature.enable_for_user(v) }
-        when :excluded_users
-          Array(values).each { |v| feature.exclude_user(v) }
-        when :group, :groups
-          Array(values).each { |v| feature.enable_for_group(v) }
-        when :excluded_groups
-          Array(values).each { |v| feature.exclude_group(v) }
-        when :role, :roles
-          Array(values).each { |v| feature.enable_for_role(v) }
-        when :excluded_roles
-          Array(values).each { |v| feature.exclude_role(v) }
-        when :tag, :tags
-          Array(values).each { |v| feature.enable_for_tag(v) }
-        when :excluded_tags
-          Array(values).each { |v| feature.exclude_tag(v) }
-        when :ip_address, :ip_addresses
-          feature.enable_for_ip_addresses(Array(values))
-        when :excluded_ip_addresses
-          feature.exclude_ip_addresses(Array(values))
-        when :percentage_users
-          feature.enable_percentage_of_users(values)
-        when :percentage_requests
-          feature.enable_percentage_of_requests(values)
-        when :date_range
-          range = values.is_a?(Hash) ? values.transform_keys(&:to_sym) : values
-          feature.enable_for_date_range(range[:start], range[:end]) if range.is_a?(Hash) && range[:start] && range[:end]
-        when :custom_attributes
-          apply_custom_attributes(feature, values)
-        end
-      end
-    end
-    # rubocop:enable Metrics/MethodLength
-    # rubocop:enable Metrics/CyclomaticComplexity
+      return unless targeting.is_a?(Hash)
 
-    def self.apply_custom_attributes(feature, values)
-      return unless values.is_a?(Hash)
+      # Exports from gem versions where variants leaked into the targeting
+      # hash must stay importable; variants are applied separately from the
+      # top-level key.
+      payload = targeting.reject { |key, _| key.to_s == 'variants' }
+      return if payload.empty?
 
-      values.each do |attr, rule|
-        rule_h = rule.is_a?(Hash) ? rule.transform_keys(&:to_sym) : {}
-        next unless rule_h[:values]
-
-        feature.enable_for_custom_attribute(attr, rule_h[:values], operator: (rule_h[:operator] || :equals).to_sym)
-      end
+      feature.replace_targeting(payload)
+    rescue Magick::InvalidTargetingError => e
+      raise ImportError, "Magick.import: invalid targeting for '#{feature.name}': #{e.message}"
     end
 
     def self.apply_variants(feature, variants)

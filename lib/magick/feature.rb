@@ -9,7 +9,8 @@ module Magick
     VALID_TYPES = %i[boolean string number].freeze
     VALID_STATUSES = %i[active inactive deprecated].freeze
 
-    attr_reader :name, :type, :status, :default_value, :description, :display_name, :group, :adapter_registry
+    attr_reader :name, :type, :status, :default_value, :description, :display_name, :group, :adapter_registry,
+                :targeting
 
     def initialize(name, adapter_registry, **options)
       @name = name.to_s
@@ -749,6 +750,64 @@ module Magick
       }
     end
 
+    # Wire-format serializer for control-plane APIs (e.g. the platform's
+    # /internal/panel/flags endpoints). The "targeting" key is ALWAYS present
+    # ({} = no targeting), array rules are arrays of strings, percentages are
+    # floats, and the internal :variants entry never appears inside targeting.
+    # Rails-idiomatic: `render json: feature` (or a collection) emits this.
+    def as_json(_options = nil)
+      {
+        'name' => name,
+        'display_name' => display_name,
+        'group' => group,
+        'type' => type.to_s,
+        'status' => status.to_s,
+        'value' => stored_value,
+        'default_value' => default_value,
+        'description' => description,
+        'targeting' => TargetingPayload.serialize(targeting),
+        'dependencies' => (@dependencies || []).map(&:to_s),
+        # Variants live inside @targeting under the internal :variants key
+        # (variants_for_export reads a never-assigned ivar and is always
+        # empty), so the wire payload reads the authoritative source.
+        'variants' => TargetingPayload.deep_stringify(targeting[:variants] || [])
+      }
+    end
+
+    # Wholesale, declarative targeting write: the payload IS the new
+    # targeting state. Keys absent from it are removed; {} clears all
+    # targeting. Accepts wire input leniently (string/symbol keys, plural
+    # aliases, scalars for lists, numeric strings) but validates strictly —
+    # unknown keys or invalid values raise InvalidTargetingError before any
+    # state is touched. The internal :variants entry is not part of the wire
+    # payload and survives the replace untouched.
+    # Accepts the payload as a positional hash or inline keywords
+    # (replace_targeting(user: [3])) — Ruby routes a braceless hash to
+    # keywords, so both spellings must land in the same place. Passing
+    # nothing raises (via normalize): clearing requires an explicit {}.
+    def replace_targeting(payload = nil, user_id: nil, **inline_rules)
+      raise ArgumentError, 'pass targeting either as a hash or inline, not both' if payload && inline_rules.any?
+
+      normalized = TargetingPayload.normalize(payload || (inline_rules unless inline_rules.empty?))
+      normalized[:variants] = targeting[:variants] if targeting[:variants]
+
+      changes = {
+        targeting: {
+          from: TargetingPayload.serialize(targeting),
+          to: TargetingPayload.serialize(normalized)
+        }
+      }
+      record_change('replace_targeting', changes, user_id: user_id) do
+        @targeting = normalized
+        persist_targeting
+
+        if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
+          Magick::Rails::Events.feature_changed(name, changes: changes, user_id: user_id)
+        end
+      end
+      true
+    end
+
     def variants_for_export
       return [] unless defined?(Magick::FeatureVariant)
 
@@ -789,8 +848,6 @@ module Magick
     end
 
     private
-
-    attr_reader :targeting
 
     # Single choke point for change tracking: wraps a public mutator's body,
     # then writes one audit entry and one version snapshot for the operation.

@@ -195,6 +195,40 @@ feature.enable_for_ip_addresses('192.168.1.0/24', '10.0.0.1')
 feature.enable_for_custom_attribute(:subscription_tier, ['premium', 'enterprise'])
 ```
 
+### Wire Targeting Payload (control-plane APIs)
+
+For building flag-management endpoints on top of the gem (an internal panel,
+a sync job, any JSON API), two primitives implement the wire contract — the
+gem ships no routes, your app owns paths and auth:
+
+```ruby
+# GET side — full flag payload, string keys. The "targeting" key is ALWAYS
+# present ({} = no targeting); list rules are arrays of strings, percentages
+# floats. Rails-idiomatic: works with render json: directly.
+render json: Magick.features.values          # [{... "targeting" => {"user" => ["3"], "percentage_users" => 50.0}}, ...]
+
+# PATCH side — wholesale, declarative write: the payload IS the new targeting
+# state. Keys absent from the payload are removed; {} clears everything.
+feature.replace_targeting(payload['targeting'])
+```
+
+`replace_targeting` is lenient about input spellings (string or symbol keys,
+plural aliases like `users:`, scalars for lists, numeric strings) but strict
+about content: unknown keys or invalid values (percentage outside `(0, 100]`,
+malformed date ranges, junk IPs) raise `Magick::InvalidTargetingError`
+*before anything is applied* — map it to a 422:
+
+```ruby
+rescue Magick::InvalidTargetingError => e
+  render json: { error: e.message }, status: :unprocessable_entity
+```
+
+Each call records one audit entry and one version snapshot
+(`replace_targeting`). A/B variants are not part of the targeting payload —
+they never appear inside the wire `targeting` object and survive a replace
+untouched (manage them via `set_variants`). `enable`/`disable` still clear
+all targeting wholesale, so their wire representation is `"targeting": {}`.
+
 ### Feature Exclusions
 
 Exclusions let you block specific users, groups, roles, tags, or IP addresses from a feature — even if they match an inclusion rule. **Exclusions always take priority over inclusions.**
