@@ -176,7 +176,9 @@ module Magick
         features += memory_adapter.all_features if memory_adapter
         features += redis_adapter.all_features if redis_adapter
         features += active_record_adapter.all_features if active_record_adapter
-        features.uniq
+        # Version history is stored under a reserved pseudo-feature namespace;
+        # it is bookkeeping, not a feature.
+        features.uniq.reject { |f| f.to_s.start_with?(Versioning::STORE_PREFIX) }
       end
 
       # Load all keys for a single feature in one call instead of N separate get() calls
@@ -357,9 +359,13 @@ module Magick
         end
       end
 
+      # Public so Versioning can apply tiered retention: hot window written to
+      # memory/Redis, unlimited archive written to ActiveRecord only.
+      attr_reader :memory_adapter, :redis_adapter, :active_record_adapter
+
       private
 
-      attr_reader :memory_adapter, :redis_adapter, :active_record_adapter, :circuit_breaker
+      attr_reader :circuit_breaker
 
       # Signal the subscribe loop to return, then close the connection so any
       # retry/reconnect attempt fails fast instead of sleeping for 5s.

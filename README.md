@@ -531,12 +531,58 @@ Magick.import(File.read('features.json'))
 
 #### Versioning and Rollback
 
-```ruby
-# Save current state as version
-Magick.versioning.save_version(:my_feature, created_by: current_user.id)
+Every state-changing operation (value, status, group, targeting, exclusions,
+variants, dependencies, delete) automatically records a version snapshot and
+an audit entry — one per logical operation, under its real action name
+(`enable`, `exclude_user`, `set_status`, …). Nested internals never
+double-record.
 
-# Rollback to previous version
-Magick.versioning.rollback(:my_feature, version: 2)
+```ruby
+# History accumulates automatically:
+Magick[:my_feature].enable            # => version 1 (action: "enable")
+Magick[:my_feature].enable_for_user(42) # => version 2 (action: "enable_for_user")
+
+# Inspect history (hot window: last 50 versions by default)
+Magick.versioning.get_versions(:my_feature)
+
+# Include the unlimited ActiveRecord archive (when AR adapter is configured)
+Magick.versioning.get_versions(:my_feature, all: true)
+
+# Rollback fully restores a snapshot: value (including false/empty), status,
+# group, and the entire targeting hash — and records the rollback itself as a
+# new version, so history only ever rolls forward.
+Magick.versioning.rollback(:my_feature, 2)
+
+# Manual snapshots still work (action: "manual")
+Magick.versioning.save_version(:my_feature, created_by: current_user.id)
+```
+
+**Retention is tiered:** memory/Redis keep the last `max_versions` snapshots
+(default 50) for fast access; the ActiveRecord adapter keeps an unlimited
+archive that also survives feature deletion.
+
+```ruby
+Magick.configure do
+  versioning enabled: true, max_versions: 50
+end
+```
+
+**Attribution:** wrap changes in `Magick.with_actor` to stamp audit entries
+(`user_id`) and versions (`created_by`):
+
+```ruby
+Magick.with_actor(current_user.id) do
+  Magick[:my_feature].enable_for_user(42)
+end
+```
+
+**Boot replay is not recorded:** the Rails railtie loads `config/features.rb`
+inside `Magick.definition_mode`, so re-applying declarative definitions on
+every process boot does not flood history. Non-Rails apps should wrap their
+own definition file load the same way:
+
+```ruby
+Magick.definition_mode { load 'config/features.rb' }
 ```
 
 #### Performance Metrics
@@ -595,11 +641,25 @@ end
 
 #### Audit Logging
 
+Every mutation is logged under its real action name (`enable`, `disable`,
+`set_value`, `enable_for_user`, `exclude_role`, `set_status`, `set_group`,
+`delete`, `rollback`, …). One logical operation produces exactly one entry:
+`enable` no longer surfaces as a bare `set_value`.
+
 ```ruby
 # View audit log entries
 entries = Magick.audit_log.entries(feature_name: :my_feature, limit: 100)
 entries.each do |entry|
   puts "#{entry.timestamp}: #{entry.action} by #{entry.user_id}"
+end
+```
+
+In the Admin UI, configure a `current_actor` hook so every change made
+through the UI is attributed:
+
+```ruby
+Magick::AdminUI.configure do |config|
+  config.current_actor = ->(controller) { controller.session[:admin_id] }
 end
 ```
 

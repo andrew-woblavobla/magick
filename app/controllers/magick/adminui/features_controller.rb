@@ -15,6 +15,9 @@ module Magick
       layout 'application'
       before_action :authenticate_admin!
       before_action :set_feature, only: %i[show edit update enable disable enable_for_user enable_for_role disable_for_role update_targeting update_variants]
+      # Attribute every change made during the request to the configured
+      # actor, so audit entries and version snapshots record who did it.
+      around_action :with_magick_actor
       # Render the TRUE current state, not this process's local cache. In a
       # multi-process / multi-container deployment the enable/disable POST and
       # the redirected GET are load-balanced to different processes, so the
@@ -320,6 +323,22 @@ module Magick
       end
 
       private
+
+      # Resolve the acting admin via the configurable AdminUI hook and run the
+      # action inside Magick.with_actor. A failing resolver only costs
+      # attribution — it must never 500 the admin UI, and it is rescued
+      # separately so an action error is never swallowed or re-run.
+      def with_magick_actor(&block)
+        actor = begin
+          resolver = Magick::AdminUI.config.current_actor
+          resolver.respond_to?(:call) ? resolver.call(self) : nil
+        rescue StandardError => e
+          Rails.logger.warn "Magick: current_actor hook failed: #{e.class}: #{e.message}" if defined?(Rails)
+          nil
+        end
+
+        actor ? Magick.with_actor(actor, &block) : yield
+      end
 
       def authenticate_admin!
         return unless Magick::AdminUI.config.require_role

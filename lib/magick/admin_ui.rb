@@ -17,7 +17,7 @@ module Magick
       end
 
       class Configuration
-        attr_accessor :theme, :brand_name, :require_role, :available_roles, :available_tags
+        attr_accessor :theme, :brand_name, :require_role, :available_roles, :available_tags, :current_actor
 
         def initialize
           @theme = :light
@@ -25,6 +25,10 @@ module Magick
           @require_role = nil
           @available_roles = [] # Can be populated via DSL: admin_ui { roles ['admin', 'user', 'manager'] }
           @available_tags = nil # Can be array or lambda: -> { Tag.all }
+          # Lambda receiving the controller, returning who is making the
+          # change; stamped onto audit entries (user_id) and versions
+          # (created_by): -> (controller) { controller.current_user&.id }
+          @current_actor = nil
         end
 
         # Get available tags, calling lambda if needed

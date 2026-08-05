@@ -87,15 +87,18 @@ if defined?(Rails)
           # Supports both config/features.rb and config/initializers/features.rb
           config.after_initialize do
             # Try config/features.rb first (recommended location)
+            # definition_mode suppresses audit/version recording: boot replays
+            # the declarative definitions in every container, and recording
+            # those would flood history with identical snapshots.
             features_file = Rails.root.join('config', 'features.rb')
             if File.exist?(features_file)
-              load features_file
+              Magick.definition_mode { load features_file }
             else
               # Fallback to config/initializers/features.rb (already loaded by Rails, but check anyway)
               initializer_file = Rails.root.join('config', 'initializers', 'features.rb')
               if File.exist?(initializer_file) && !defined?(Magick::Rails::FeaturesLoaded)
                 # Only load if not already loaded (Rails may have already loaded it)
-                load initializer_file
+                Magick.definition_mode { load initializer_file }
               end
             end
             begin

@@ -135,8 +135,11 @@ module Magick
                    end
     end
 
-    def versioning(enabled: true)
-      @versioning = (Versioning.new(adapter_registry || default_adapter_registry) if enabled)
+    def versioning(enabled: true, max_versions: Versioning::DEFAULT_MAX_VERSIONS)
+      @versioning_enabled = enabled
+      @versioning = if enabled
+                      Versioning.new(adapter_registry || default_adapter_registry, max_versions: max_versions)
+                    end
     end
 
     def circuit_breaker(threshold: nil, timeout: nil)
@@ -186,8 +189,11 @@ module Magick
         end
       end
 
-      Magick.audit_log = audit_log if audit_log
-      Magick.versioning = versioning if versioning
+      # Read the ivars directly: calling the DSL methods here would re-run
+      # them with their defaults and stomp explicit `enabled: false` settings.
+      Magick.audit_log = @audit_log if @audit_log
+      Magick.versioning = @versioning if @versioning
+      Magick.versioning_enabled = @versioning_enabled unless @versioning_enabled.nil?
       Magick.warn_on_deprecated = warn_on_deprecated
     end
 

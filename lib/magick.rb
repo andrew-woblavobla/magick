@@ -216,6 +216,64 @@ module Magick
       @versioning ||= Versioning.new(adapter_registry || default_adapter_registry)
     end
 
+    # When false, Feature#record_change skips version snapshots (audit log
+    # entries are still written). Set via `versioning enabled: false` in the
+    # configuration DSL.
+    attr_writer :versioning_enabled
+
+    def versioning_enabled?
+      @versioning_enabled.nil? || @versioning_enabled != false
+    end
+
+    # Attribute all changes made inside the block to the given actor. Audit
+    # entries pick it up as user_id and versions as created_by, unless the
+    # call site passes an explicit user_id:.
+    #
+    #   Magick.with_actor(current_user.id) { Magick[:checkout].enable }
+    def with_actor(actor)
+      previous = Thread.current[:magick_actor]
+      Thread.current[:magick_actor] = actor
+      yield
+    ensure
+      Thread.current[:magick_actor] = previous
+    end
+
+    def current_actor
+      Thread.current[:magick_actor]
+    end
+
+    # Suppress audit/version recording while declarative feature definitions
+    # are (re)applied. Process boot replays config/features.rb in every
+    # container; recording those replays would flood history with identical
+    # snapshots. The Rails railtie wraps the features file load in this;
+    # non-Rails apps should do the same around their definition file.
+    def definition_mode
+      previous = Thread.current[:magick_definition_mode]
+      Thread.current[:magick_definition_mode] = true
+      yield
+    ensure
+      Thread.current[:magick_definition_mode] = previous
+    end
+
+    def definition_mode?
+      Thread.current[:magick_definition_mode] == true
+    end
+
+    # Reentrancy guard for Feature#record_change: the outermost public
+    # mutator records once; nested mutator calls (enable -> set_value) run
+    # silently so one logical operation never produces multiple entries.
+    def suppress_change_recording
+      previous = Thread.current[:magick_change_recording]
+      Thread.current[:magick_change_recording] = true
+      yield
+    ensure
+      Thread.current[:magick_change_recording] = previous
+    end
+
+    def change_recording_suppressed?
+      Thread.current[:magick_change_recording] == true || definition_mode?
+    end
+
     # Manually enable Redis tracking for performance metrics
     # Useful if Redis adapter becomes available after initial configuration
     def enable_redis_tracking(enable: true)
@@ -280,6 +338,9 @@ module Magick
       @adapter_registry = nil
       @default_adapter = nil
       @default_adapter_registry = nil
+      @versioning = nil
+      @audit_log = nil
+      @versioning_enabled = nil
       @performance_metrics&.clear!
     end
 

@@ -20,11 +20,13 @@ Magick.configure do
   # Enable performance metrics tracking
   performance_metrics enabled: true
 
-  # Enable audit logging
+  # Enable audit logging (every mutation is logged under its real action name)
   audit_log enabled: true
 
-  # Enable versioning support
-  versioning enabled: true
+  # Enable versioning (every save creates a version snapshot; allows rollback)
+  # max_versions caps the hot window kept in memory/Redis; the ActiveRecord
+  # adapter keeps an unlimited archive.
+  versioning enabled: true, max_versions: 50
 
   # Enable deprecation warnings
   warn_on_deprecated true

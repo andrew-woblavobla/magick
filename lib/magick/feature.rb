@@ -233,187 +233,246 @@ module Magick
     end
 
     def enable_for_user(user_id)
-      enable_targeting(:user, user_id)
+      record_change('enable_for_user', targeting_change(:user, added: user_id)) do
+        enable_targeting(:user, user_id)
+      end
       true
     end
 
     def disable_for_user(user_id)
-      disable_targeting(:user, user_id)
+      record_change('disable_for_user', targeting_change(:user, removed: user_id)) do
+        disable_targeting(:user, user_id)
+      end
       true
     end
 
     def enable_for_group(group_name)
-      enable_targeting(:group, group_name)
+      record_change('enable_for_group', targeting_change(:group, added: group_name)) do
+        enable_targeting(:group, group_name)
+      end
       true
     end
 
     def disable_for_group(group_name)
-      disable_targeting(:group, group_name)
+      record_change('disable_for_group', targeting_change(:group, removed: group_name)) do
+        disable_targeting(:group, group_name)
+      end
       true
     end
 
     def enable_for_role(role_name)
-      enable_targeting(:role, role_name)
+      record_change('enable_for_role', targeting_change(:role, added: role_name)) do
+        enable_targeting(:role, role_name)
+      end
       true
     end
 
     def disable_for_role(role_name)
-      disable_targeting(:role, role_name)
+      record_change('disable_for_role', targeting_change(:role, removed: role_name)) do
+        disable_targeting(:role, role_name)
+      end
       true
     end
 
     def enable_for_tag(tag_name)
-      enable_targeting(:tag, tag_name)
+      record_change('enable_for_tag', targeting_change(:tag, added: tag_name)) do
+        enable_targeting(:tag, tag_name)
+      end
       true
     end
 
     def disable_for_tag(tag_name)
-      disable_targeting(:tag, tag_name)
+      record_change('disable_for_tag', targeting_change(:tag, removed: tag_name)) do
+        disable_targeting(:tag, tag_name)
+      end
       true
     end
 
     # --- Exclusion methods ---
 
     def exclude_user(user_id)
-      enable_targeting(:excluded_users, user_id)
+      record_change('exclude_user', targeting_change(:excluded_users, added: user_id)) do
+        enable_targeting(:excluded_users, user_id)
+      end
       true
     end
 
     def remove_user_exclusion(user_id)
-      disable_targeting(:excluded_users, user_id)
+      record_change('remove_user_exclusion', targeting_change(:excluded_users, removed: user_id)) do
+        disable_targeting(:excluded_users, user_id)
+      end
       true
     end
 
     def exclude_tag(tag_name)
-      enable_targeting(:excluded_tags, tag_name)
+      record_change('exclude_tag', targeting_change(:excluded_tags, added: tag_name)) do
+        enable_targeting(:excluded_tags, tag_name)
+      end
       true
     end
 
     def remove_tag_exclusion(tag_name)
-      disable_targeting(:excluded_tags, tag_name)
+      record_change('remove_tag_exclusion', targeting_change(:excluded_tags, removed: tag_name)) do
+        disable_targeting(:excluded_tags, tag_name)
+      end
       true
     end
 
     def exclude_group(group_name)
-      enable_targeting(:excluded_groups, group_name)
+      record_change('exclude_group', targeting_change(:excluded_groups, added: group_name)) do
+        enable_targeting(:excluded_groups, group_name)
+      end
       true
     end
 
     def remove_group_exclusion(group_name)
-      disable_targeting(:excluded_groups, group_name)
+      record_change('remove_group_exclusion', targeting_change(:excluded_groups, removed: group_name)) do
+        disable_targeting(:excluded_groups, group_name)
+      end
       true
     end
 
     def exclude_role(role_name)
-      enable_targeting(:excluded_roles, role_name)
+      record_change('exclude_role', targeting_change(:excluded_roles, added: role_name)) do
+        enable_targeting(:excluded_roles, role_name)
+      end
       true
     end
 
     def remove_role_exclusion(role_name)
-      disable_targeting(:excluded_roles, role_name)
+      record_change('remove_role_exclusion', targeting_change(:excluded_roles, removed: role_name)) do
+        disable_targeting(:excluded_roles, role_name)
+      end
       true
     end
 
     def exclude_ip_addresses(ip_addresses)
-      # excluded_ip_addresses is stored as a flat Array of strings; bypass the
-      # generic enable_targeting path whose "array type" branch stringifies the
-      # incoming array into a single element.
-      @targeting[:excluded_ip_addresses] ||= []
-      Array(ip_addresses).each do |ip|
-        str = ip.to_s
-        @targeting[:excluded_ip_addresses] << str unless @targeting[:excluded_ip_addresses].include?(str)
+      ips = Array(ip_addresses).map(&:to_s)
+      record_change('exclude_ip_addresses', targeting_change(:excluded_ip_addresses, added: ips)) do
+        # excluded_ip_addresses is stored as a flat Array of strings; bypass the
+        # generic enable_targeting path whose "array type" branch stringifies the
+        # incoming array into a single element.
+        @targeting[:excluded_ip_addresses] ||= []
+        ips.each do |str|
+          @targeting[:excluded_ip_addresses] << str unless @targeting[:excluded_ip_addresses].include?(str)
+        end
+        save_targeting
       end
-      save_targeting
       true
     end
 
     def remove_ip_exclusion
-      disable_targeting(:excluded_ip_addresses)
+      record_change('remove_ip_exclusion', targeting_change(:excluded_ip_addresses)) do
+        disable_targeting(:excluded_ip_addresses)
+      end
       true
     end
 
     def enable_percentage_of_users(percentage)
-      @targeting[:percentage_users] = percentage.to_f
-      save_targeting
+      record_change('enable_percentage_of_users', targeting_change(:percentage_users, added: percentage.to_f)) do
+        @targeting[:percentage_users] = percentage.to_f
+        save_targeting
 
-      # Update registered feature instance if it exists
-      Magick.features[name].instance_variable_set(:@targeting, @targeting.dup) if Magick.features.key?(name)
+        # Update registered feature instance if it exists
+        Magick.features[name].instance_variable_set(:@targeting, @targeting.dup) if Magick.features.key?(name)
 
-      # Rails 8+ event
-      if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
-        Magick::Rails::Events.targeting_added(name, targeting_type: :percentage_users, targeting_value: percentage)
+        # Rails 8+ event
+        if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
+          Magick::Rails::Events.targeting_added(name, targeting_type: :percentage_users, targeting_value: percentage)
+        end
       end
 
       true
     end
 
     def disable_percentage_of_users
-      disable_targeting(:percentage_users)
+      record_change('disable_percentage_of_users', targeting_change(:percentage_users)) do
+        disable_targeting(:percentage_users)
+      end
       true
     end
 
     def enable_percentage_of_requests(percentage)
-      @targeting[:percentage_requests] = percentage.to_f
-      save_targeting
+      record_change('enable_percentage_of_requests', targeting_change(:percentage_requests, added: percentage.to_f)) do
+        @targeting[:percentage_requests] = percentage.to_f
+        save_targeting
 
-      # Update registered feature instance if it exists
-      Magick.features[name].instance_variable_set(:@targeting, @targeting.dup) if Magick.features.key?(name)
+        # Update registered feature instance if it exists
+        Magick.features[name].instance_variable_set(:@targeting, @targeting.dup) if Magick.features.key?(name)
 
-      # Rails 8+ event
-      if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
-        Magick::Rails::Events.targeting_added(name, targeting_type: :percentage_requests, targeting_value: percentage)
+        # Rails 8+ event
+        if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
+          Magick::Rails::Events.targeting_added(name, targeting_type: :percentage_requests, targeting_value: percentage)
+        end
       end
 
       true
     end
 
     def disable_percentage_of_requests
-      disable_targeting(:percentage_requests)
+      record_change('disable_percentage_of_requests', targeting_change(:percentage_requests)) do
+        disable_targeting(:percentage_requests)
+      end
       true
     end
 
     def enable_for_date_range(start_date, end_date)
-      enable_targeting(:date_range, { start: start_date, end: end_date })
+      record_change('enable_for_date_range',
+                    targeting_change(:date_range, added: { start: start_date, end: end_date })) do
+        enable_targeting(:date_range, { start: start_date, end: end_date })
+      end
       true
     end
 
     def disable_date_range
-      disable_targeting(:date_range)
+      record_change('disable_date_range', targeting_change(:date_range)) do
+        disable_targeting(:date_range)
+      end
       true
     end
 
     def enable_for_ip_addresses(ip_addresses)
-      # ip_address is stored as a flat Array of strings; bypass the generic
-      # enable_targeting path whose "array type" branch stringifies the
-      # incoming array into a single '["x.y.z"]' entry.
-      @targeting[:ip_address] ||= []
-      Array(ip_addresses).each do |ip|
-        str = ip.to_s
-        @targeting[:ip_address] << str unless @targeting[:ip_address].include?(str)
+      ips = Array(ip_addresses).map(&:to_s)
+      record_change('enable_for_ip_addresses', targeting_change(:ip_address, added: ips)) do
+        # ip_address is stored as a flat Array of strings; bypass the generic
+        # enable_targeting path whose "array type" branch stringifies the
+        # incoming array into a single '["x.y.z"]' entry.
+        @targeting[:ip_address] ||= []
+        ips.each do |str|
+          @targeting[:ip_address] << str unless @targeting[:ip_address].include?(str)
+        end
+        save_targeting
       end
-      save_targeting
       true
     end
 
     def disable_ip_addresses
-      disable_targeting(:ip_address)
+      record_change('disable_ip_addresses', targeting_change(:ip_address)) do
+        disable_targeting(:ip_address)
+      end
       true
     end
 
     def enable_for_custom_attribute(attribute_name, values, operator: :equals)
-      custom_attrs = targeting[:custom_attributes] || {}
-      custom_attrs[attribute_name.to_sym] = { values: Array(values), operator: operator }
-      enable_targeting(:custom_attributes, custom_attrs)
+      change = targeting_change(:custom_attributes,
+                                added: { attribute: attribute_name, values: Array(values), operator: operator })
+      record_change('enable_for_custom_attribute', change) do
+        custom_attrs = targeting[:custom_attributes] || {}
+        custom_attrs[attribute_name.to_sym] = { values: Array(values), operator: operator }
+        enable_targeting(:custom_attributes, custom_attrs)
+      end
       true
     end
 
     def disable_custom_attribute(attribute_name)
-      custom_attrs = targeting[:custom_attributes] || {}
-      custom_attrs.delete(attribute_name.to_sym)
-      if custom_attrs.empty?
-        disable_targeting(:custom_attributes)
-      else
-        enable_targeting(:custom_attributes, custom_attrs)
+      record_change('disable_custom_attribute', targeting_change(:custom_attributes, removed: attribute_name)) do
+        custom_attrs = targeting[:custom_attributes] || {}
+        custom_attrs.delete(attribute_name.to_sym)
+        if custom_attrs.empty?
+          disable_targeting(:custom_attributes)
+        else
+          enable_targeting(:custom_attributes, custom_attrs)
+        end
       end
       true
     end
@@ -422,34 +481,42 @@ module Magick
       variants_array = Array(variants).map do |v|
         v.is_a?(FeatureVariant) ? v : FeatureVariant.new(v[:name], v[:value], weight: v[:weight] || 0)
       end
-      enable_targeting(:variants, variants_array.map(&:to_h))
+      payload = variants_array.map(&:to_h)
 
-      # Rails 8+ event
-      if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
-        Magick::Rails::Events.variant_set(name, variants: variants_array)
+      record_change('set_variants', { variants: payload }) do
+        enable_targeting(:variants, payload)
+
+        # Rails 8+ event
+        if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
+          Magick::Rails::Events.variant_set(name, variants: variants_array)
+        end
       end
 
       true
     end
 
     def add_dependency(dependency_name)
-      @dependencies ||= []
-      @dependencies << dependency_name.to_s unless @dependencies.include?(dependency_name.to_s)
+      record_change('add_dependency', { dependency: { added: dependency_name.to_s } }) do
+        @dependencies ||= []
+        @dependencies << dependency_name.to_s unless @dependencies.include?(dependency_name.to_s)
 
-      # Rails 8+ event
-      if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
-        Magick::Rails::Events.dependency_added(name, dependency_name)
+        # Rails 8+ event
+        if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
+          Magick::Rails::Events.dependency_added(name, dependency_name)
+        end
       end
 
       true
     end
 
     def remove_dependency(dependency_name)
-      @dependencies&.delete(dependency_name.to_s)
+      record_change('remove_dependency', { dependency: { removed: dependency_name.to_s } }) do
+        @dependencies&.delete(dependency_name.to_s)
 
-      # Rails 8+ event
-      if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
-        Magick::Rails::Events.dependency_removed(name, dependency_name)
+        # Rails 8+ event
+        if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
+          Magick::Rails::Events.dependency_removed(name, dependency_name)
+        end
       end
 
       true
@@ -501,90 +568,93 @@ module Magick
       old_value = @stored_value
       validate_value!(value)
 
-      # Bulk write all metadata in a single adapter call instead of 7 separate calls
-      data = { 'value' => value, 'type' => type, 'status' => status, 'default_value' => default_value }
-      data['description'] = description if description
-      data['display_name'] = display_name if display_name
-      data['group'] = group if group
-      adapter_registry.set_all_data(name, data)
-
-      @stored_value = value
-      @stored_value_initialized = true
-
-      # Update registered feature instance if it exists
-      if Magick.features.key?(name)
-        registered = Magick.features[name]
-        registered.instance_variable_set(:@stored_value, value)
-        registered.instance_variable_set(:@stored_value_initialized, true)
-        registered.instance_variable_set(:@targeting, @targeting.dup) if @targeting
-      end
-
       changes = { value: { from: old_value, to: value } }
 
-      Magick.audit_log&.log(
-        name,
-        'set_value',
-        user_id: user_id,
-        changes: changes
-      )
+      record_change('set_value', changes, user_id: user_id) do
+        # Bulk write all metadata in a single adapter call instead of 7 separate calls
+        data = { 'value' => value, 'type' => type, 'status' => status, 'default_value' => default_value }
+        data['description'] = description if description
+        data['display_name'] = display_name if display_name
+        data['group'] = group if group
+        adapter_registry.set_all_data(name, data)
 
-      if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
-        Magick::Rails::Events.feature_changed(name, changes: changes, user_id: user_id)
-        Magick::Rails::Events.audit_logged(name, action: 'set_value', user_id: user_id, changes: changes)
+        @stored_value = value
+        @stored_value_initialized = true
+
+        # Update registered feature instance if it exists
+        if Magick.features.key?(name)
+          registered = Magick.features[name]
+          registered.instance_variable_set(:@stored_value, value)
+          registered.instance_variable_set(:@stored_value_initialized, true)
+          registered.instance_variable_set(:@targeting, @targeting.dup) if @targeting
+        end
+
+        if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
+          Magick::Rails::Events.feature_changed(name, changes: changes, user_id: user_id)
+        end
       end
 
       true
     end
 
     def enable(user_id: nil)
-      # Clear all targeting to enable globally
-      @targeting = {}
-      save_targeting
+      changes = { value: { from: @stored_value, to: true }, targeting: { cleared: true } }
 
-      case type
-      when :boolean
-        set_value(true, user_id: user_id)
-      when :string
-        raise InvalidFeatureValueError, 'Cannot enable string feature. Use set_value instead.'
-      when :number
-        raise InvalidFeatureValueError, 'Cannot enable number feature. Use set_value instead.'
-      else
-        raise InvalidFeatureValueError, "Cannot enable feature of type #{type}"
-      end
+      record_change('enable', changes, user_id: user_id) do
+        # Clear all targeting to enable globally
+        @targeting = {}
+        save_targeting
 
-      # Rails 8+ event
-      if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
-        Magick::Rails::Events.feature_enabled_globally(name, user_id: user_id)
+        case type
+        when :boolean
+          set_value(true, user_id: user_id)
+        when :string
+          raise InvalidFeatureValueError, 'Cannot enable string feature. Use set_value instead.'
+        when :number
+          raise InvalidFeatureValueError, 'Cannot enable number feature. Use set_value instead.'
+        else
+          raise InvalidFeatureValueError, "Cannot enable feature of type #{type}"
+        end
+
+        # Rails 8+ event
+        if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
+          Magick::Rails::Events.feature_enabled_globally(name, user_id: user_id)
+        end
       end
 
       true
     end
 
     def disable(user_id: nil)
-      # Clear all targeting to disable globally
-      @targeting = {}
-      save_targeting
+      disabled_value = { boolean: false, string: '', number: 0 }[type]
+      changes = { value: { from: @stored_value, to: disabled_value }, targeting: { cleared: true } }
 
-      case type
-      when :boolean
-        set_value(false, user_id: user_id)
-      when :string
-        set_value('', user_id: user_id)
-      when :number
-        set_value(0, user_id: user_id)
-      else
-        raise InvalidFeatureValueError, "Cannot disable feature of type #{type}"
-      end
+      record_change('disable', changes, user_id: user_id) do
+        # Clear all targeting to disable globally
+        @targeting = {}
+        save_targeting
 
-      # Ensure registered feature instance also has targeting cleared
-      if Magick.features.key?(name)
-        registered = Magick.features[name]
-        registered.instance_variable_set(:@targeting, {})
-      end
+        case type
+        when :boolean
+          set_value(false, user_id: user_id)
+        when :string
+          set_value('', user_id: user_id)
+        when :number
+          set_value(0, user_id: user_id)
+        else
+          raise InvalidFeatureValueError, "Cannot disable feature of type #{type}"
+        end
 
-      # Rails 8+ event
-      if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
-        Magick::Rails::Events.feature_disabled_globally(name, user_id: user_id)
+        # Ensure registered feature instance also has targeting cleared
+        if Magick.features.key?(name)
+          registered = Magick.features[name]
+          registered.instance_variable_set(:@targeting, {})
+        end
+
+        # Rails 8+ event
+        if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
+          Magick::Rails::Events.feature_disabled_globally(name, user_id: user_id)
+        end
       end
 
       true
@@ -593,34 +663,41 @@ module Magick
     def set_status(new_status)
       raise InvalidFeatureValueError, "Invalid status: #{new_status}" unless VALID_STATUSES.include?(new_status.to_sym)
 
-      @status = new_status.to_sym
-      adapter_registry.set(name, 'status', status)
+      record_change('set_status', { status: { from: @status, to: new_status.to_sym } }) do
+        @status = new_status.to_sym
+        adapter_registry.set(name, 'status', status)
+      end
       true
     end
 
     def set_group(group_name)
-      if group_name.nil? || group_name.to_s.strip.empty?
-        @group = nil
-        # Clear group from adapter by setting to empty string (adapters handle this)
-        adapter_registry.set(name, 'group', nil)
-      else
-        @group = group_name.to_s.strip
-        adapter_registry.set(name, 'group', @group)
-      end
+      new_group = group_name.nil? || group_name.to_s.strip.empty? ? nil : group_name.to_s.strip
 
-      # Update registered feature instance if it exists
-      Magick.features[name].instance_variable_set(:@group, @group) if Magick.features.key?(name)
+      record_change('set_group', { group: { from: @group, to: new_group } }) do
+        @group = new_group
+        # Clear group from adapter by setting to nil (adapters handle this)
+        adapter_registry.set(name, 'group', @group)
+
+        # Update registered feature instance if it exists
+        Magick.features[name].instance_variable_set(:@group, @group) if Magick.features.key?(name)
+      end
 
       true
     end
 
     def delete
-      adapter_registry.delete(name)
-      @stored_value = nil
-      @stored_value_initialized = false # Reset initialization flag so get_value returns default_value
-      @targeting = {}
-      # Also remove from Magick.features if registered
-      Magick.features.delete(name.to_s)
+      # Snapshot before the wipe so the recorded version captures the state
+      # this feature had when it was deleted, not the emptied one.
+      snapshot = to_h
+
+      record_change('delete', { deleted: true }, snapshot: snapshot) do
+        adapter_registry.delete(name)
+        @stored_value = nil
+        @stored_value_initialized = false # Reset initialization flag so get_value returns default_value
+        @targeting = {}
+        # Also remove from Magick.features if registered
+        Magick.features.delete(name.to_s)
+      end
       true
     end
 
@@ -686,6 +763,69 @@ module Magick
     end
 
     def save_targeting
+      # Records only when called directly (e.g. Admin UI clearing variants);
+      # when reached through a wrapping mutator the guard is active and this
+      # just persists.
+      record_change('update_targeting', { targeting: targeting.dup }) do
+        persist_targeting
+      end
+    end
+
+    # Restore full feature state from a version snapshot (used by
+    # Versioning#rollback). Replaces value (including false/empty), status,
+    # group, the entire targeting hash and dependencies wholesale.
+    def restore_snapshot!(data)
+      set_status(data[:status]) if data[:status]
+      set_group(data[:group]) if data.key?(:group)
+
+      value = data[:value]
+      set_value(cast_value(value)) unless value.nil?
+
+      @targeting = normalize_targeting(data[:targeting])
+      save_targeting
+
+      @dependencies = Array(data[:dependencies]).map(&:to_s)
+      true
+    end
+
+    private
+
+    attr_reader :targeting
+
+    # Single choke point for change tracking: wraps a public mutator's body,
+    # then writes one audit entry and one version snapshot for the operation.
+    # A thread-local guard makes nested mutator calls (enable -> set_value)
+    # silent, so one logical operation records exactly once, under its real
+    # action name. No-op while definitions are being (re)applied at boot.
+    def record_change(action, changes = {}, user_id: nil, snapshot: nil)
+      if Magick.change_recording_suppressed?
+        return block_given? ? yield : true
+      end
+
+      result = block_given? ? Magick.suppress_change_recording { yield } : true
+
+      actor = user_id || Magick.current_actor
+      Magick.audit_log&.log(name, action, user_id: actor, changes: changes)
+
+      if Magick.versioning_enabled?
+        begin
+          Magick.versioning&.record_change(self, action: action, created_by: actor, snapshot: snapshot)
+        rescue StandardError => e
+          warn "Magick: Failed to record version for '#{Magick::LogSafe.sanitize(name)}': #{Magick::LogSafe.sanitize(e.message)}" if defined?(Rails) && Rails.env.development?
+        end
+      end
+
+      result
+    end
+
+    def targeting_change(type, added: nil, removed: nil)
+      change = { type: type }
+      change[:added] = added unless added.nil?
+      change[:removed] = removed unless removed.nil?
+      { targeting: change }
+    end
+
+    def persist_targeting
       # Save targeting to adapter (this updates memory synchronously, then Redis/AR)
       # The set method already publishes cache invalidation to other processes via Pub/Sub
       adapter_registry.set(name, 'targeting', targeting)
@@ -705,10 +845,6 @@ module Magick
       # 2. Publishing twice causes duplicate reloads in other processes
       # 3. The set method handles both sync and async Redis updates correctly
     end
-
-    private
-
-    attr_reader :targeting
 
     def stored_value
       return @stored_value if @stored_value_initialized
@@ -748,19 +884,21 @@ module Magick
       group_value = all_data['group']
       @group = group_value if group_value
 
-      targeting_value = all_data['targeting']
-      if targeting_value.is_a?(Hash)
-        @targeting = targeting_value.transform_keys(&:to_sym)
-        @targeting[:percentage_users] = @targeting[:percentage_users].to_f if @targeting[:percentage_users]
-        @targeting[:percentage_requests] = @targeting[:percentage_requests].to_f if @targeting[:percentage_requests]
-      else
-        @targeting = {}
-      end
+      @targeting = normalize_targeting(all_data['targeting'])
 
       # Track what was loaded so save_metadata_if_new can skip unnecessary writes
       @_loaded_description = all_data['description']
       @_loaded_display_name = all_data['display_name']
       @_loaded_group = all_data['group']
+    end
+
+    def normalize_targeting(raw)
+      return {} unless raw.is_a?(Hash)
+
+      normalized = raw.transform_keys(&:to_sym)
+      normalized[:percentage_users] = normalized[:percentage_users].to_f if normalized[:percentage_users]
+      normalized[:percentage_requests] = normalized[:percentage_requests].to_f if normalized[:percentage_requests]
+      normalized
     end
 
     def save_metadata_if_new

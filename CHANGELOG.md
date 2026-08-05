@@ -2,6 +2,59 @@
 
 All notable changes to `magick-feature-flags` are documented in this file.
 
+## 1.5.0 — 2026-08-05
+
+Every save now creates a version, and the audit log covers every mutation.
+Previously versions were only written by explicit `save_version` calls, and
+the audit log fired only from `set_value`.
+
+### Features
+- **Automatic versioning.** Every state-changing operation on a feature
+  (value, status, group, all targeting/exclusion mutations, variants,
+  dependencies, delete) records a version snapshot through a single choke
+  point (`Feature#record_change`). A thread-local reentrancy guard ensures one
+  logical operation records exactly once — `enable` no longer surfaces as an
+  internal `set_value`.
+- **Full audit coverage with real action names.** Audit entries (and
+  `magick.feature_flag.audit_logged` events) now carry the actual operation:
+  `enable`, `disable`, `enable_for_user`, `exclude_role`, `set_status`,
+  `set_group`, `delete`, `rollback`, … Subscribers matching on `'set_value'`
+  for UI toggles will see the new names.
+- **Adapter-backed, tiered version history.** The hot window (last
+  `max_versions`, default 50, configurable via
+  `versioning enabled: true, max_versions: N`) lives in memory/Redis and is
+  shared across containers; the ActiveRecord adapter keeps an unlimited
+  archive (`__magick_versions:<name>` row) that survives restarts, Redis
+  flushes, and even feature deletion. `get_versions(name, all: true)` merges
+  the archive; rollback reaches versions that left the hot window.
+- **Actor attribution.** `Magick.with_actor(id) { ... }` stamps audit
+  `user_id` and version `created_by` for every change in the block; explicit
+  `user_id:` kwargs still win. The Admin UI attributes changes via the new
+  `Magick::AdminUI.configure { |c| c.current_actor = ->(controller) { ... } }`
+  hook (around_action on every request).
+- **Definition mode.** `Magick.definition_mode { ... }` suppresses recording
+  while declarative definitions are (re)applied; the railtie wraps the boot
+  load of `config/features.rb`, so container boots no longer would flood
+  history with identical snapshots.
+
+### Fixes
+- **Rollback restores state wholesale.** Previously rollback re-applied only
+  user/group/role targeting additively (never clearing current rules),
+  ignored exclusions/percentages/date ranges/variants, and skipped falsy
+  values (`if feature_data[:value]` — a boolean `false` was never restored).
+  It now replaces value (including `false`/empty), status, group, the entire
+  targeting hash, and dependencies — and records the rollback itself as a new
+  version instead of rewriting history.
+- **Version history survives restarts.** `get_versions` previously read only
+  a per-process in-memory list; adapter-written snapshots were never read
+  back. History is now rehydrated from the adapters.
+- **`versioning enabled: false` is honored.** `Config#apply!` used to re-run
+  the DSL methods with their defaults, stomping explicit
+  `enabled: false` settings for versioning/audit_log.
+- **Single audit event per change.** `set_value` previously emitted
+  `magick.feature_flag.audit_logged` twice (once itself, once via
+  `AuditLog#log`).
+
 ## 1.4.3 — 2026-06-01
 
 Fixes the multi-process/multi-container "toggle doesn't take effect until I
