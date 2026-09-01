@@ -126,8 +126,73 @@ RSpec.describe Magick::TargetingPayload do
     end
   end
 
-  it 'round-trips serialize -> normalize losslessly for list and percentage rules' do
-    internal = { user: %w[3 7], excluded_roles: %w[qa], percentage_users: 50.0 }
-    expect(described_class.normalize(described_class.serialize(internal))).to eq(internal)
+  # The wire contract promises serialize and normalize are inverses: what a
+  # control plane reads back from as_json is what replace_targeting accepts,
+  # unchanged. One example per rule kind named in the CONTEXT.md glossary,
+  # inclusions and their exclusion counterparts, so a serialisation change to
+  # any single kind fails here rather than in the panel.
+  describe 'round-trip (normalize(serialize(t)) == t)' do
+    # Canonical internal targeting — the shape `normalize` itself produces, and
+    # therefore the shape `replace_targeting` stores and adapters persist.
+    round_trip_rules = {
+      'users' => { user: %w[3 7] },
+      'excluded users' => { excluded_users: %w[9] },
+      'groups' => { group: %w[beta-testers] },
+      'excluded groups' => { excluded_groups: %w[contractors] },
+      'roles' => { role: %w[admin support] },
+      'excluded roles' => { excluded_roles: %w[qa] },
+      'tags' => { tag: %w[mobile] },
+      'excluded tags' => { excluded_tags: %w[legacy] },
+      'IPs' => { ip_address: %w[10.0.0.0/8 192.168.1.5] },
+      'excluded IPs' => { excluded_ip_addresses: %w[203.0.113.0/24] },
+      'user percentages' => { percentage_users: 50.0 },
+      'request percentages' => { percentage_requests: 12.5 },
+      'date ranges' => { date_range: { start: '2026-01-01T00:00:00Z', end: '2026-02-01T00:00:00Z' } },
+      'custom attributes' => { custom_attributes: { plan: { values: %w[pro enterprise], operator: :in } } },
+      'complex conditions' => {
+        complex_conditions: {
+          operator: :or,
+          conditions: [
+            { type: :user, params: { user_ids: %w[1 2] } },
+            { type: :custom_attribute, params: { attribute: 'plan', values: %w[pro] } }
+          ]
+        }
+      }
+    }.freeze
+
+    round_trip_rules.each do |kind, internal|
+      it "round-trips #{kind}" do
+        expect(described_class.normalize(described_class.serialize(internal))).to eq(internal)
+      end
+    end
+
+    it 'round-trips every rule kind at once' do
+      internal = round_trip_rules.values.reduce(:merge)
+      expect(internal.keys).to match_array(described_class::CANONICAL_KEYS)
+      expect(described_class.normalize(described_class.serialize(internal))).to eq(internal)
+    end
+
+    it 'leaves the internal variants entry out of the round-trip entirely' do
+      internal = { user: %w[3], variants: [{ name: 'control', weight: 50 }] }
+
+      wire = described_class.serialize(internal)
+      expect(wire).to eq('user' => %w[3])
+      expect(described_class.normalize(wire)).to eq(user: %w[3])
+    end
+
+    # JSON has no Time or Symbol, so internal state richer than the wire format
+    # (as built by the pre-1.6 imperative mutators) narrows on the way out. It
+    # converges after a single trip rather than drifting further, which is what
+    # keeps a read-modify-write from the panel stable.
+    it 'converges to a fixed point for internal state the wire cannot express' do
+      internal = {
+        date_range: { start: Time.utc(2026, 1, 1), end: Time.utc(2026, 2, 1) },
+        complex_conditions: { operator: :and, conditions: [{ type: :custom_attribute, params: { attribute: :plan } }] }
+      }
+
+      once = described_class.normalize(described_class.serialize(internal))
+      expect(once[:date_range]).to eq(start: '2026-01-01T00:00:00Z', end: '2026-02-01T00:00:00Z')
+      expect(described_class.normalize(described_class.serialize(once))).to eq(once)
+    end
   end
 end
