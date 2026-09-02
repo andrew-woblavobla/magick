@@ -2,6 +2,20 @@
 
 All notable changes to `magick-feature-flags` are documented in this file.
 
+## Unreleased
+
+### Security
+
+- **Config**: `ConfigDSL.load_from_file` now checks containment against the
+  project root (`Rails.root`, else the directory holding the `Gemfile`, else an
+  explicit `ConfigDSL.project_root =`) instead of `Dir.pwd`, and compares
+  separator-aware. The old bare-prefix-of-CWD check was bypassable two ways:
+  a sibling directory whose name merely starts with the project directory's
+  name (`/srv/app-evil` passed for `/srv/app`), and any process running from
+  `/`, which made every absolute path pass. Both sat directly in front of an
+  `instance_eval` sink. `MAGICK_ALLOW_CONFIG_EVAL=1` still skips the check for
+  a trusted file outside the tree, and is still dangerous.
+
 ## 1.6.0 — 2026-08-05
 
 Wire targeting contract for control-plane APIs. The gem now ships the two

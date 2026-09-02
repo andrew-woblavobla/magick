@@ -323,6 +323,70 @@ module Magick
       config
     end
 
+    # Explicitly configured project root, if any. Set it with
+    # `Magick::ConfigDSL.project_root = '/srv/app'` — never from untrusted
+    # input.
+    @project_root = nil
+
+    class << self
+      attr_writer :project_root
+    end
+
+    # The directory a config file must live under.
+    #
+    # Rails.root when the host is a Rails app, otherwise the Bundler project
+    # (the directory holding the Gemfile). Deliberately *not* Dir.pwd: a
+    # process started from `/`, or one that chdirs after boot, must not be
+    # able to widen the guard in front of the eval sink below.
+    #
+    # Returns nil when no root can be determined; the loader then refuses
+    # every path unless MAGICK_ALLOW_CONFIG_EVAL=1 is set. Apps that run
+    # outside both Rails and Bundler can assign a root explicitly with
+    # `Magick::ConfigDSL.project_root = '/srv/app'` — never from untrusted
+    # input.
+    def self.project_root
+      root = @project_root || detect_project_root
+      return nil if root.nil? || root.to_s.empty?
+
+      real_path(root.to_s)
+    end
+
+    def self.detect_project_root
+      if defined?(::Rails) && ::Rails.respond_to?(:root) && ::Rails.root
+        ::Rails.root.to_s
+      elsif defined?(::Bundler) && ::Bundler.respond_to?(:root)
+        begin
+          ::Bundler.root.to_s
+        rescue StandardError
+          nil
+        end
+      end
+    end
+    private_class_method :detect_project_root
+
+    # Symlink-resolved form of a directory, so the root and the candidate
+    # path are compared in the same namespace (Capistrano-style
+    # `current -> releases/x` deploys would otherwise never match).
+    def self.real_path(path)
+      File.realpath(path)
+    rescue StandardError
+      File.expand_path(path)
+    end
+    private_class_method :real_path
+
+    # Separator-aware containment: `/srv/app-evil` is not inside `/srv/app`,
+    # and a root of `/` is treated as no containment at all rather than as a
+    # prefix every absolute path satisfies.
+    def self.inside_project_root?(resolved, root)
+      return false if root.nil?
+
+      base = root.chomp(File::SEPARATOR)
+      return false if base.empty?
+
+      resolved == base || resolved.start_with?(base + File::SEPARATOR)
+    end
+    private_class_method :inside_project_root?
+
     # Load a Magick configuration DSL file by path.
     #
     # SECURITY: This method evaluates the file's contents as Ruby via
@@ -332,16 +396,22 @@ module Magick
     # file that lives inside the project tree (typical use:
     # Rails.root.join('config/features.rb')).
     #
-    # The path is resolved with File.realpath and must be inside the
-    # current working directory. An explicit opt-in env var
-    # (MAGICK_ALLOW_CONFIG_EVAL=1) is required to load paths outside CWD.
+    # The path is resolved with File.realpath and must sit inside
+    # `project_root` (see above). Setting MAGICK_ALLOW_CONFIG_EVAL=1 skips
+    # the check entirely and is dangerous: it hands any caller that can
+    # influence `file_path` arbitrary code execution. Use it only for a
+    # trusted file you deliberately keep outside the project tree.
     def self.load_from_file(file_path)
       resolved = File.realpath(file_path)
-      allow_outside_cwd = ENV['MAGICK_ALLOW_CONFIG_EVAL'] == '1'
-      unless allow_outside_cwd || resolved.start_with?(Dir.pwd)
-        raise SecurityError,
-              "Refusing to load Magick config from outside the project tree: #{resolved}. " \
-              'Set MAGICK_ALLOW_CONFIG_EVAL=1 to override (only if you trust the file).'
+
+      unless ENV['MAGICK_ALLOW_CONFIG_EVAL'] == '1'
+        root = project_root
+        unless inside_project_root?(resolved, root)
+          raise SecurityError,
+                'Refusing to load Magick config from outside the project tree ' \
+                "(#{root || 'project root could not be determined'}): #{resolved}. " \
+                'Set MAGICK_ALLOW_CONFIG_EVAL=1 to override (only if you trust the file).'
+        end
       end
 
       config = Config.new

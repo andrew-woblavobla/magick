@@ -434,6 +434,34 @@ exclude_role :new_dashboard, 'suspended'
 exclude_ip_addresses :new_dashboard, '10.0.0.0/8'
 ```
 
+**Loading a DSL file yourself**
+
+The Rails railtie loads `config/features.rb` for you. If you load one by hand,
+use `Magick::ConfigDSL.load_from_file`:
+
+```ruby
+Magick.definition_mode { Magick::ConfigDSL.load_from_file(Rails.root.join('config/features.rb')) }
+```
+
+`load_from_file` **evaluates the file as Ruby**. Never hand it a path derived
+from HTTP params, ENV, or any other untrusted source — that is remote code
+execution. As a backstop, the path is resolved with `File.realpath` and must
+live inside the project root: `Rails.root` under Rails, otherwise the directory
+holding the `Gemfile`. The check is separator-aware (`/srv/app-evil` is not
+inside `/srv/app`) and never consults the process working directory, so
+starting the app from `/` or chdir-ing later cannot widen it. Outside Rails and
+Bundler, set the root explicitly:
+
+```ruby
+Magick::ConfigDSL.project_root = '/srv/app'
+```
+
+**`MAGICK_ALLOW_CONFIG_EVAL=1` is dangerous.** It disables the containment
+check entirely, so any caller that can influence the path gets arbitrary code
+execution in your process. Set it only for a trusted file you deliberately keep
+outside the project tree, and never on a host where the path can come from a
+request.
+
 ### In Controllers
 
 ```ruby
