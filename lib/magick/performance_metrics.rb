@@ -95,12 +95,12 @@ module Magick
       pending_count = nil
       total_pending = nil
       @mutex.synchronize do
-        # Pre-insert cap: construct + append only when there is room.
-        # Keeps @metrics bounded at METRICS_RING_CAP under any load.
-        if @metrics.length < METRICS_RING_CAP
-          metric = Metric.new(feature_name_str, operation_str, duration, success: success)
-          @metrics << metric
-        end
+        # Ring buffer: append, then evict oldest. Capping by refusing new
+        # samples would freeze @metrics on the first METRICS_RING_CAP entries
+        # whenever there is no Redis to drain it, so averages would report
+        # boot-time behaviour forever.
+        @metrics << Metric.new(feature_name_str, operation_str, duration, success: success)
+        @metrics.shift while @metrics.length > METRICS_RING_CAP
         @usage_count[feature_name_str] += 1
         @pending_updates[feature_name_str] += 1
         pending_count = @pending_updates[feature_name_str]
@@ -163,10 +163,11 @@ module Magick
 
       return unless @_adapter_available
       return unless @_redis_available || @redis_enabled
-      return if @pending_updates.empty?
 
       should_flush = false
       @mutex.synchronize do
+        next if @pending_updates.empty?
+
         # Flush if we have enough pending updates (sum of all counts) or enough time has passed
         # Check total count of pending updates, not just number of keys
         total_pending_count = @pending_updates.values.sum
@@ -179,12 +180,18 @@ module Magick
     # Force flush pending updates to Redis immediately
     # Useful when you need up-to-date stats across processes
     def force_flush_to_redis
-      return if @pending_updates.empty?
-
       flush_to_redis
     end
 
     def flush_to_redis
+      return if @mutex.synchronize { @pending_updates.empty? }
+
+      # Never drain pending state when there is nowhere to write it. Without
+      # this guard a deployment with no Redis credits @flushed_counts for
+      # updates that were never persisted, and usage_count reads back zero.
+      redis = stats_redis_client
+      return if redis.nil?
+
       updates_to_flush = nil
       duration_stats_to_flush = {}
       @mutex.synchronize do
@@ -193,66 +200,26 @@ module Magick
         updates_to_flush = @pending_updates.dup
         flushed_feature_names = updates_to_flush.keys.to_set
         @pending_updates.clear
-        # Track what we're flushing so we don't double-count in usage_count
-        updates_to_flush.each do |feature_name, count|
-          @flushed_counts[feature_name] += count
-        end
 
         # Collect duration stats for flushed features
-        # Group metrics by feature_name and operation, sum durations and count occurrences
+        # Group metrics by feature_name and operation, sum durations and count occurrences.
+        # Each group carries its own metric objects so that only samples we
+        # actually persist get dropped from memory afterwards.
         @metrics.each do |metric|
           next unless flushed_feature_names.include?(metric.feature_name) && metric.success
 
           key = "#{metric.feature_name}:#{metric.operation}"
           duration_stats_to_flush[key] ||= { sum: 0.0, count: 0, feature_name: metric.feature_name,
-                                             operation: metric.operation }
+                                             operation: metric.operation, metrics: [] }
           duration_stats_to_flush[key][:sum] += metric.duration
           duration_stats_to_flush[key][:count] += 1
+          duration_stats_to_flush[key][:metrics] << metric
         end
-
-        # Remove metrics for flushed features from memory to reduce memory usage
-        # Metrics are already persisted in Redis, so we don't need to keep them in memory
-        @metrics.reject! { |m| flushed_feature_names.include?(m.feature_name) }
-
-        @last_flush = Time.now
       end
 
       return if updates_to_flush.nil? || updates_to_flush.empty?
 
-      # Update Redis in batch
-      # Always try to flush if Redis adapter is available, regardless of @redis_enabled flag
-      # This ensures stats are collected even if redis_enabled wasn't set correctly
-      begin
-        adapter = Magick.adapter_registry || Magick.default_adapter_registry
-        if adapter.is_a?(Magick::Adapters::Registry) && adapter.redis_available?
-          redis = adapter.redis_client
-          if redis
-            # Flush usage counts
-            updates_to_flush.each do |feature_name, count|
-              redis_key = "magick:stats:#{feature_name}"
-              redis.incrby(redis_key, count)
-              redis.expire(redis_key, 86_400 * 7) # Keep stats for 7 days
-            end
-
-            # Flush duration stats (sum and count for calculating averages)
-            duration_stats_to_flush.each do |_key, stats|
-              sum_key = "magick:duration:sum:#{stats[:feature_name]}:#{stats[:operation]}"
-              count_key = "magick:duration:count:#{stats[:feature_name]}:#{stats[:operation]}"
-              redis.incrbyfloat(sum_key, stats[:sum])
-              redis.incrby(count_key, stats[:count])
-              redis.expire(sum_key, 86_400 * 7) # Keep stats for 7 days
-              redis.expire(count_key, 86_400 * 7)
-            end
-
-            # Auto-enable redis tracking if we successfully flushed to Redis
-            # This ensures redis_enabled is set correctly even if config didn't work
-            @redis_enabled ||= true
-          end
-        end
-      rescue StandardError => e
-        # Silently fail - don't break feature checks if stats fail
-        warn "Magick: Failed to flush stats to Redis: #{e.message}" if defined?(Rails) && Rails.env.development?
-      end
+      write_flush_to_redis(redis, updates_to_flush, duration_stats_to_flush)
     end
 
     def enable_redis_tracking(enable: true)
@@ -260,7 +227,7 @@ module Magick
       @redis_enabled = enable
 
       # Flush any pending updates when enabling
-      if enable && !@pending_updates.empty?
+      if enable && !@mutex.synchronize { @pending_updates.empty? }
         begin
           flush_to_redis
         rescue StandardError => e
@@ -280,46 +247,46 @@ module Magick
     end
 
     def average_duration(feature_name: nil, operation: nil)
-      # Calculate from memory metrics (current process, not yet flushed)
-      filtered = @metrics.select do |m|
-        (feature_name.nil? || m.feature_name == feature_name.to_s) &&
-          (operation.nil? || m.operation == operation.to_s) &&
-          m.success
-      end
+      # Calculate from memory metrics (current process, not yet flushed).
+      # Read under the mutex - the async processor appends to and evicts from
+      # @metrics concurrently.
+      memory_sum, memory_count = @mutex.synchronize do
+        filtered = @metrics.select do |m|
+          (feature_name.nil? || m.feature_name == feature_name.to_s) &&
+            (operation.nil? || m.operation == operation.to_s) &&
+            m.success
+        end
 
-      memory_sum = filtered.sum(&:duration)
-      memory_count = filtered.length
+        [filtered.sum(&:duration), filtered.length]
+      end
 
       # Also get from Redis if available (persisted across processes)
       redis_sum = 0.0
       redis_count = 0
       begin
-        adapter = Magick.adapter_registry || Magick.default_adapter_registry
-        if adapter.is_a?(Magick::Adapters::Registry) && adapter.redis_available?
-          redis = adapter.redis_client
-          if redis
-            if feature_name && operation
-              # Specific feature and operation
-              sum_key = "magick:duration:sum:#{feature_name}:#{operation}"
-              count_key = "magick:duration:count:#{feature_name}:#{operation}"
-              redis_sum = redis.get(sum_key).to_f
-              redis_count = redis.get(count_key).to_i
-            elsif feature_name
-              # All operations for this feature
-              pattern = "magick:duration:sum:#{feature_name}:*"
-              redis.keys(pattern).each do |sum_key|
-                op = sum_key.to_s.sub("magick:duration:sum:#{feature_name}:", '')
-                count_key = "magick:duration:count:#{feature_name}:#{op}"
-                redis_sum += redis.get(sum_key).to_f
-                redis_count += redis.get(count_key).to_i
-              end
-            else
-              # All features and operations (not recommended, but supported)
-              redis.keys('magick:duration:sum:*').each do |sum_key|
-                count_key = sum_key.to_s.sub(':sum:', ':count:')
-                redis_sum += redis.get(sum_key).to_f
-                redis_count += redis.get(count_key).to_i
-              end
+        redis = stats_redis_client
+        if redis
+          if feature_name && operation
+            # Specific feature and operation
+            sum_key = "magick:duration:sum:#{feature_name}:#{operation}"
+            count_key = "magick:duration:count:#{feature_name}:#{operation}"
+            redis_sum = redis.get(sum_key).to_f
+            redis_count = redis.get(count_key).to_i
+          elsif feature_name
+            # All operations for this feature
+            prefix = "magick:duration:sum:#{feature_name}:"
+            scan_stats_keys(redis, "#{prefix}*").each do |sum_key|
+              op = sum_key.to_s.sub(prefix, '')
+              count_key = "magick:duration:count:#{feature_name}:#{op}"
+              redis_sum += redis.get(sum_key).to_f
+              redis_count += redis.get(count_key).to_i
+            end
+          else
+            # All features and operations (not recommended, but supported)
+            scan_stats_keys(redis, 'magick:duration:sum:*').each do |sum_key|
+              count_key = sum_key.to_s.sub(':sum:', ':count:')
+              redis_sum += redis.get(sum_key).to_f
+              redis_count += redis.get(count_key).to_i
             end
           end
         end
@@ -339,25 +306,22 @@ module Magick
       feature_name_str = feature_name.to_s
 
       # Force flush any pending updates for this feature before reading to ensure accuracy
-      # This ensures stats are synced across processes immediately
-      force_flush_to_redis if @pending_updates[feature_name_str] && @pending_updates[feature_name_str] > 0
+      # This ensures stats are synced across processes immediately.
+      # With no Redis configured the flush is a no-op and the counts stay in memory.
+      force_flush_to_redis if @mutex.synchronize { @pending_updates[feature_name_str] }.positive?
 
       # Memory count = total counts in current process minus what we've already flushed
       # This avoids double-counting with Redis
-      memory_count = (@usage_count[feature_name_str] || 0) - (@flushed_counts[feature_name_str] || 0)
-      memory_count = 0 if memory_count < 0 # Safety check
+      memory_count = @mutex.synchronize do
+        (@usage_count[feature_name_str] || 0) - (@flushed_counts[feature_name_str] || 0)
+      end
+      memory_count = 0 if memory_count.negative? # Safety check
 
       # Redis count = total counts from all processes (including this process's flushed counts)
       redis_count = 0
       begin
-        adapter = Magick.adapter_registry || Magick.default_adapter_registry
-        if adapter.is_a?(Magick::Adapters::Registry) && adapter.redis_available?
-          redis = adapter.redis_client
-          if redis
-            redis_key = "magick:stats:#{feature_name_str}"
-            redis_count = redis.get(redis_key).to_i
-          end
-        end
+        redis = stats_redis_client
+        redis_count = redis.get("magick:stats:#{feature_name_str}").to_i if redis
       rescue StandardError
         # Silently fail
       end
@@ -367,22 +331,20 @@ module Magick
     end
 
     def most_used_features(limit: 10)
-      # Combine memory and Redis counts
-      combined_counts = @usage_count.dup
+      # Combine memory and Redis counts. The memory side is read under the
+      # mutex because the async processor writes @usage_count.
+      combined_counts = @mutex.synchronize { @usage_count.dup }
 
       # Always check Redis if adapter is available (not just if @redis_enabled)
       # This ensures we get the full count even if redis_enabled flag wasn't set correctly
       begin
-        adapter = Magick.adapter_registry || Magick.default_adapter_registry
-        if adapter.is_a?(Magick::Adapters::Registry) && adapter.redis_available?
-          redis = adapter.redis_client
-          if redis
-            # Get all stats keys
-            redis.keys('magick:stats:*').each do |key|
-              feature_name = key.to_s.sub('magick:stats:', '')
-              redis_count = redis.get(key).to_i
-              combined_counts[feature_name] = (combined_counts[feature_name] || 0) + redis_count
-            end
+        redis = stats_redis_client
+        if redis
+          # Get all stats keys
+          scan_stats_keys(redis, 'magick:stats:*').each do |key|
+            feature_name = key.to_s.sub('magick:stats:', '')
+            redis_count = redis.get(key).to_i
+            combined_counts[feature_name] = (combined_counts[feature_name] || 0) + redis_count
           end
         end
       rescue StandardError
@@ -407,6 +369,95 @@ module Magick
       @async_queue.close if @async_queue.respond_to?(:close)
       @async_thread&.kill
       @async_thread = nil
+    end
+
+    private
+
+    # Redis client to read/write stats through, or nil when Redis is not
+    # configured or unreachable. Callers must treat nil as "no Redis" and
+    # leave in-memory bookkeeping untouched.
+    def stats_redis_client
+      adapter = Magick.adapter_registry || Magick.default_adapter_registry
+      return nil unless adapter.is_a?(Magick::Adapters::Registry) && adapter.redis_available?
+
+      adapter.redis_client
+    rescue StandardError
+      nil
+    end
+
+    # Enumerate keys with a cursor-based SCAN, the way the Redis adapter does.
+    # KEYS globs the whole keyspace and blocks the server for every other
+    # client, and these paths run behind the Admin UI stats page.
+    def scan_stats_keys(redis, pattern)
+      keys = []
+      cursor = '0'
+      loop do
+        cursor, batch = redis.scan(cursor, match: pattern, count: 100)
+        keys.concat(Array(batch))
+        break if cursor.to_s == '0'
+      end
+      keys
+    end
+
+    # Persist one drained batch. Counts are credited to @flushed_counts (and
+    # the matching duration samples dropped from memory) only once their write
+    # has actually landed, so a failure mid-flight leaves the remainder pending
+    # rather than absent from Redis *and* subtracted from memory.
+    def write_flush_to_redis(redis, updates_to_flush, duration_stats_to_flush)
+      unwritten_counts = updates_to_flush.dup
+      written_counts = {}
+      written_metrics = []
+
+      begin
+        # Flush usage counts
+        updates_to_flush.each do |feature_name, count|
+          redis_key = "magick:stats:#{feature_name}"
+          redis.incrby(redis_key, count)
+          redis.expire(redis_key, 86_400 * 7) # Keep stats for 7 days
+          written_counts[feature_name] = unwritten_counts.delete(feature_name)
+        end
+
+        # Flush duration stats (sum and count for calculating averages)
+        duration_stats_to_flush.each_value do |stats|
+          sum_key = "magick:duration:sum:#{stats[:feature_name]}:#{stats[:operation]}"
+          count_key = "magick:duration:count:#{stats[:feature_name]}:#{stats[:operation]}"
+          redis.incrbyfloat(sum_key, stats[:sum])
+          redis.incrby(count_key, stats[:count])
+          redis.expire(sum_key, 86_400 * 7) # Keep stats for 7 days
+          redis.expire(count_key, 86_400 * 7)
+          written_metrics.concat(stats[:metrics])
+        end
+
+        # Auto-enable redis tracking if we successfully flushed to Redis
+        # This ensures redis_enabled is set correctly even if config didn't work
+        @redis_enabled ||= true
+      rescue StandardError => e
+        # Don't break feature checks if stats fail - whatever did not land is
+        # restored below and retried on the next flush.
+        warn "Magick: Failed to flush stats to Redis: #{e.message}" if defined?(Rails) && Rails.env.development?
+      end
+
+      settle_flush(written_counts, unwritten_counts, written_metrics)
+    end
+
+    # Reconcile in-memory bookkeeping with what the write actually persisted.
+    def settle_flush(written_counts, unwritten_counts, written_metrics)
+      @mutex.synchronize do
+        # Track what we flushed so we don't double-count it in usage_count
+        written_counts.each { |feature_name, count| @flushed_counts[feature_name] += count }
+        # Anything that did not land stays pending for the next attempt
+        unwritten_counts.each { |feature_name, count| @pending_updates[feature_name] += count }
+
+        # Persisted samples no longer need to live in memory. Samples recorded
+        # while the write was in flight are not in written_metrics, so they stay.
+        unless written_metrics.empty?
+          persisted = {}.compare_by_identity
+          written_metrics.each { |metric| persisted[metric] = true }
+          @metrics.reject! { |metric| persisted.key?(metric) }
+        end
+
+        @last_flush = Time.now
+      end
     end
   end
 end

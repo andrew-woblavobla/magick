@@ -701,6 +701,14 @@ end
 
 **Note:** When `redis_tracking: true` is set, usage counts are persisted to Redis and aggregated across all processes, giving you total usage statistics. Metrics are automatically flushed in batches to minimize Redis overhead.
 
+**Without Redis** the counts stay in memory and are reported in full: a flush
+only drains pending updates once the write has actually landed, so a
+Redis-less deployment — or a Redis that is temporarily unreachable — never
+loses counts. Durations are kept as a rolling window of the most recent 1,000
+samples per process, so averages track recent behaviour rather than the first
+samples after boot. Stats that need to enumerate the keyspace use `SCAN`, not
+`KEYS`.
+
 #### Audit Logging
 
 Every mutation is logged under its real action name (`enable`, `disable`,
