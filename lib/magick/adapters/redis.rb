@@ -5,6 +5,19 @@ require 'json'
 module Magick
   module Adapters
     class Redis < Base
+      # redis-rb defaults every timeout to 5s. A feature-flag lookup is on the
+      # hot path of a request, and a Redis that black-holes packets (a dropped
+      # route, a hung box) does not refuse the connection — it just never
+      # answers — so an untimed client pins the request thread for those 5s
+      # while the circuit breaker never gets an error to count. One second is
+      # already an eternity for a HGET against a local Redis; past that we
+      # would rather fall through to the next adapter.
+      DEFAULT_TIMEOUTS = {
+        connect_timeout: 1.0,
+        read_timeout: 1.0,
+        write_timeout: 1.0
+      }.freeze
+
       def initialize(redis_client = nil)
         @redis = redis_client || default_redis_client
         @namespace = 'magick:features'
@@ -200,7 +213,7 @@ module Magick
         return nil unless defined?(Redis)
 
         require 'redis'
-        ::Redis.new
+        ::Redis.new(**DEFAULT_TIMEOUTS)
       rescue StandardError
         nil
       end

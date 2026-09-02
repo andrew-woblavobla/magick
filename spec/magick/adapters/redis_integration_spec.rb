@@ -153,6 +153,30 @@ RSpec.describe Magick::Adapters::Redis, 'integration', :redis, if: RedisSpecSupp
     r2.shutdown
   end
 
+  # The async write path publishes only after the background write lands, so it
+  # needs its own coverage — the sync example above would not catch a broken
+  # gate there.
+  it 'publishes cache invalidation from an async write too' do
+    memory1 = Magick::Adapters::Memory.new
+    memory2 = Magick::Adapters::Memory.new
+    r1 = Magick::Adapters::Registry.new(memory1, described_class.new(RedisSpecSupport.new_client), async: true)
+    r2 = Magick::Adapters::Registry.new(memory2, described_class.new(RedisSpecSupport.new_client))
+
+    begin
+      sleep 0.2 # let both subscribers connect
+      memory2.set(:async_foo, 'value', 'stale')
+      r1.set(:async_foo, 'value', 'fresh')
+
+      wait_until { memory2.get(:async_foo, 'value').nil? }
+
+      expect(memory2.get(:async_foo, 'value')).to be_nil
+      expect(RedisSpecSupport.new_client.hget('magick:features:async_foo', 'value')).to eq('fresh')
+    ensure
+      r1.shutdown
+      r2.shutdown
+    end
+  end
+
   # The regression this file exists to pin down: two containers toggling the
   # same flag close together. Suppression used to be keyed on "did I write this
   # feature in the last 2.0s", so r1 — having just written shared_flag — threw

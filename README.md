@@ -1033,6 +1033,52 @@ never raises into your code — but the divergence is always reported:
 Magick: redis set failed for 'new_checkout': Magick::AdapterError: Failed to set in Redis: Connection refused
 ```
 
+### When Redis is unavailable
+
+Redis going away degrades the gem; it never breaks the host app. Nothing on a
+read path raises — `Magick.enabled?`, `exists?`, `all_features`,
+`get_all_data` and `preload!` all fall through to the next adapter and, failing
+that, answer "not found".
+
+Every Redis call — reads, writes, deletes and Pub/Sub publishes alike — goes
+through the circuit breaker:
+
+```ruby
+Magick.configure do
+  circuit_breaker threshold: 5, timeout: 60
+end
+```
+
+- After `threshold` failures the circuit **opens** and Redis is not contacted at
+  all for `timeout` seconds. Calls raise `Magick::CircuitOpenError` internally
+  (a `Magick::AdapterError`), which the registry catches; callers just see the
+  fallback answer. Dropped writes are still reported as described above, with
+  `reason: "circuit breaker open"`.
+- Once the window elapses the circuit goes **half-open** and admits exactly
+  **one** probe. If that probe fails the circuit re-opens immediately, so a
+  permanently dead Redis costs one failed call per window, not `threshold` of
+  them.
+- **An open circuit never publishes cache invalidation.** This matters more than
+  it sounds: the invalidation tells every peer to re-read the feature from
+  Redis, and if this process could not write to Redis, what the peers would read
+  is the *pre-toggle* value. Invalidation is published only after Redis has
+  genuinely accepted the write. The same rule applies to the async write path.
+
+Locally the toggle still takes effect: memory is updated synchronously, so the
+process that made the change keeps serving the new value while Redis is down.
+Peers will not see it until Redis recovers and the change is written again.
+
+The default Redis client sets explicit `connect_timeout`, `read_timeout` and
+`write_timeout` (1s each) rather than inheriting redis-rb's 5s defaults — a
+Redis that black-holes packets never refuses the connection, so without them a
+single lookup can pin a request thread for 5 seconds. Override any of them:
+
+```ruby
+Magick.configure do
+  redis url: ENV['REDIS_URL'], db: 1, connect_timeout: 0.5, read_timeout: 2.0
+end
+```
+
 ### Admin UI
 
 Magick includes a web-based Admin UI for managing feature flags. It's a Rails Engine that provides a user-friendly interface for viewing, enabling, disabling, and configuring features.

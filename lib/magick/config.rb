@@ -219,15 +219,21 @@ module Magick
       adapter
     end
 
-    def configure_redis_adapter(url: nil, namespace: nil, db: nil, client: nil)
+    # Timeouts are always explicit — see Adapters::Redis::DEFAULT_TIMEOUTS for
+    # why. Callers can override any of the three (`redis url: ..., read_timeout: 3`)
+    # but cannot end up with none.
+    def configure_redis_adapter(url: nil, namespace: nil, db: nil, client: nil, **timeouts)
       return nil unless defined?(Redis)
 
       url ||= @redis_url
       namespace ||= @redis_namespace
       db ||= @redis_db
+      timeouts = Adapters::Redis::DEFAULT_TIMEOUTS.merge(
+        timeouts.slice(*Adapters::Redis::DEFAULT_TIMEOUTS.keys)
+      )
 
       redis_client = client || begin
-        redis_options = {}
+        redis_options = timeouts.dup
 
         if url
           # Parse URL to extract database number if present

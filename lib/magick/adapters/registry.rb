@@ -86,16 +86,10 @@ module Magick
         return value unless value.nil?
 
         # Fall back to Redis if available
-        if redis_adapter
-          begin
-            value = redis_adapter.get(feature_name, key)
-            if !value.nil? && memory_adapter
-              memory_adapter.set(feature_name, key, value)
-              return value
-            end
-          rescue StandardError, AdapterError
-            # Redis failed, continue to next adapter
-          end
+        value = redis_read { |redis| redis.get(feature_name, key) }
+        if !value.nil? && memory_adapter
+          memory_adapter.set(feature_name, key, value)
+          return value
         end
 
         # Fall back to Active Record if available
@@ -125,8 +119,7 @@ module Magick
           if @async && defined?(Thread)
             spawn_async_write(feature_name, update_redis)
           else
-            update_redis.call
-            publish_cache_invalidation(feature_name)
+            publish_cache_invalidation(feature_name) if update_redis.call
           end
         end
 
@@ -140,15 +133,10 @@ module Magick
         memory_adapter&.delete(feature_name)
 
         if redis_adapter
-          begin
-            redis_adapter.delete(feature_name)
-            # Publish cache invalidation message
-            publish_cache_invalidation(feature_name)
-          rescue StandardError => e
-            # Deliberately not behind the circuit breaker, as before: only the
-            # silence is being fixed here, not the write semantics.
-            AdapterFailure.report(backend: :redis, operation: :delete, feature_name: feature_name, error: e)
-          end
+          # Behind the breaker like every other Redis write, and the peers are
+          # only told to reload once Redis has actually forgotten the feature.
+          deleted = write_to_redis(:delete, feature_name) { redis_adapter.delete(feature_name) }
+          publish_cache_invalidation(feature_name) if deleted
         end
 
         return unless active_record_adapter
@@ -156,19 +144,22 @@ module Magick
         write_to_active_record(:delete, feature_name) { active_record_adapter.delete(feature_name) }
       end
 
+      # Fail-safe by contract: an unreachable backend means "not found", never
+      # an exception. Callers reach this from outside the fail-safe evaluation
+      # path, where a raise would surface as a 500 rather than a disabled flag.
       def exists?(feature_name)
-        return true if memory_adapter&.exists?(feature_name)
-        return true if redis_adapter&.exists?(feature_name) == true
-        return true if active_record_adapter&.exists?(feature_name) == true
+        return true if safely(false) { memory_adapter&.exists?(feature_name) }
+        return true if redis_read { |redis| redis.exists?(feature_name) } == true
+        return true if safely(false) { active_record_adapter&.exists?(feature_name) } == true
 
         false
       end
 
       def all_features
         features = []
-        features += memory_adapter.all_features if memory_adapter
-        features += redis_adapter.all_features if redis_adapter
-        features += active_record_adapter.all_features if active_record_adapter
+        features += safely([]) { memory_adapter&.all_features } || []
+        features += redis_read { |redis| redis.all_features } || []
+        features += safely([]) { active_record_adapter&.all_features } || []
         # Version history and audit history are stored under reserved
         # pseudo-feature namespaces; they are bookkeeping, not features.
         features.uniq.reject { |f| reserved_store_name?(f) }
@@ -183,16 +174,10 @@ module Magick
         end
 
         # Fall back to Redis
-        if redis_adapter
-          begin
-            data = redis_adapter.get_all_data(feature_name)
-            if data && !data.empty?
-              memory_adapter.set_all_data(feature_name, data) if memory_adapter
-              return data
-            end
-          rescue StandardError, AdapterError
-            # Redis failed, continue
-          end
+        data = redis_read { |redis| redis.get_all_data(feature_name) }
+        if data && !data.empty?
+          memory_adapter.set_all_data(feature_name, data) if memory_adapter
+          return data
         end
 
         # Fall back to Active Record
@@ -264,16 +249,10 @@ module Magick
         end
 
         # Merge/override with Redis data (more up-to-date than AR in most setups)
-        if redis_adapter
-          begin
-            redis_data = load_features_only(redis_adapter)
-            redis_data.each do |feature_name, data|
-              all_data[feature_name] ||= {}
-              all_data[feature_name].merge!(data)
-            end
-          rescue StandardError, AdapterError
-            # Redis failed, use what we have from AR
-          end
+        redis_data = redis_read { |redis| load_features_only(redis) }
+        redis_data&.each do |feature_name, data|
+          all_data[feature_name] ||= {}
+          all_data[feature_name].merge!(data)
         end
 
         # Reserved bookkeeping namespaces (version snapshots, audit history)
@@ -302,8 +281,7 @@ module Magick
           if @async && defined?(Thread)
             spawn_async_write(feature_name, update_redis)
           else
-            update_redis.call
-            publish_cache_invalidation(feature_name)
+            publish_cache_invalidation(feature_name) if update_redis.call
           end
         end
 
@@ -374,8 +352,18 @@ module Magick
         return unless redis_adapter
 
         begin
-          redis_client = redis_adapter.client
-          redis_client&.publish(CACHE_INVALIDATION_CHANNEL, invalidation_message(feature_name))
+          # Through the breaker for two reasons: PUBLISH is a Redis round-trip
+          # like any other and must not block a request thread on a dead
+          # server, and an open circuit means this process cannot have written
+          # the new value — inviting peers to reload would hand them the
+          # pre-toggle state.
+          circuit_breaker.call do
+            redis_client = redis_adapter.client
+            redis_client&.publish(CACHE_INVALIDATION_CHANNEL, invalidation_message(feature_name))
+          end
+        rescue CircuitOpenError
+          AdapterFailure.report(backend: :redis, operation: :publish_cache_invalidation,
+                                feature_name: feature_name, reason: 'circuit breaker open')
         rescue StandardError => e
           # Best effort for this process, but a dropped invalidation leaves every
           # OTHER process holding a stale value, so it is reported like any other
@@ -431,6 +419,32 @@ module Magick
         reserved_store_prefixes.any? { |prefix| name.start_with?(prefix) }
       end
 
+      # Every Redis read goes through here. Reads used to call the adapter
+      # directly, which left the breaker protecting the write path only: a
+      # Redis that black-holes packets rather than refusing connections would
+      # stall a request thread for the driver's timeout on every single lookup
+      # while the breaker sat open doing nothing.
+      #
+      # Returns nil when Redis is absent, the circuit is open, or the call
+      # failed — the caller then falls through to the next adapter. Read
+      # failures are not reported: unlike a write, falling through to the next
+      # adapter leaves nothing diverged.
+      def redis_read
+        return nil unless redis_adapter
+
+        circuit_breaker.call { yield redis_adapter }
+      rescue StandardError
+        nil
+      end
+
+      # Run a backend call that must never raise at the registry boundary,
+      # substituting `fallback` when it does.
+      def safely(fallback)
+        yield
+      rescue StandardError
+        fallback
+      end
+
       # Signal the subscribe loop to return, then close the connection so any
       # retry/reconnect attempt fails fast instead of sleeping for 5s.
       def close_subscriber_connection(subscriber)
@@ -465,18 +479,18 @@ module Magick
       # have. That is reported before returning, never swallowed. The failure
       # itself is contained: a broken backend must not raise into the caller.
       def write_to_redis(operation, feature_name)
+        circuit_breaker.call { yield }
+        true
+      rescue CircuitOpenError
         # An open breaker drops the write without ever calling the adapter, so
         # the drop has to be reported on its own — otherwise a backend that
         # stays down goes quiet after the breaker trips, which is exactly the
-        # window in which divergence accumulates.
-        if circuit_breaker.open?
-          AdapterFailure.report(backend: :redis, operation: operation, feature_name: feature_name,
-                                reason: 'circuit breaker open')
-          return false
-        end
-
-        circuit_breaker.call { yield }
-        true
+        # window in which divergence accumulates. Reported as a reason rather
+        # than an error: nothing went wrong here, the write simply never
+        # happened.
+        AdapterFailure.report(backend: :redis, operation: operation, feature_name: feature_name,
+                              reason: 'circuit breaker open')
+        false
       rescue StandardError => e
         AdapterFailure.report(backend: :redis, operation: operation, feature_name: feature_name, error: e)
         false
@@ -497,8 +511,7 @@ module Magick
       # the error completely.
       def spawn_async_write(feature_name, update_redis)
         thread = Thread.new do
-          update_redis.call
-          publish_cache_invalidation(feature_name)
+          publish_cache_invalidation(feature_name) if update_redis.call
         rescue StandardError => e
           AdapterFailure.report(backend: :redis, operation: :async_write, feature_name: feature_name, error: e)
         end
@@ -574,15 +587,7 @@ module Magick
           end
         end
 
-        if redis_adapter
-          begin
-            return circuit_breaker.call { redis_adapter.get_all_data(feature_name) }
-          rescue StandardError, AdapterError
-            nil
-          end
-        end
-
-        nil
+        redis_read { |redis| redis.get_all_data(feature_name) }
       end
 
       # Bulk read ALL features from the shared, authoritative backend, skipping
@@ -599,15 +604,7 @@ module Magick
           end
         end
 
-        if redis_adapter
-          begin
-            return circuit_breaker.call { load_features_only(redis_adapter) }
-          rescue StandardError, AdapterError
-            {}
-          end
-        end
-
-        {}
+        redis_read { |redis| load_features_only(redis) } || {}
       end
 
       # Everything in the store except the reserved bookkeeping namespaces.

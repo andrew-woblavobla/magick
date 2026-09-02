@@ -32,6 +32,35 @@ RSpec.describe Magick::Adapters::Registry do
     end
   end
 
+  # The gem's documented contract is that a flag lookup never raises. exists?
+  # and all_features are reached from outside the fail-safe evaluation path
+  # (Admin UI, export, dependency checks), so a backend outage has to read as
+  # "not there", not as a 500.
+  describe 'fail-safe reads when a backend is unavailable' do
+    let(:broken) do
+      instance_double(Magick::Adapters::Redis).tap do |a|
+        allow(a).to receive(:exists?).and_raise(Magick::AdapterError, 'Redis down')
+        allow(a).to receive(:all_features).and_raise(Magick::AdapterError, 'Redis down')
+        # An unreachable backend cannot hand out a connection either.
+        allow(a).to receive(:client).and_raise(Magick::AdapterError, 'Redis down')
+      end
+    end
+    let(:registry) { described_class.new(memory_adapter, broken) }
+
+    after { registry.shutdown(timeout: 0.1) }
+
+    it 'returns false from exists? rather than propagating the adapter error' do
+      expect { registry.exists?(:anything) }.not_to raise_error
+      expect(registry.exists?(:anything)).to be false
+    end
+
+    it 'still reports what the healthy adapters know' do
+      memory_adapter.set(:local_flag, 'value', true)
+      expect(registry.exists?(:local_flag)).to be true
+      expect(registry.all_features).to eq(['local_flag'])
+    end
+  end
+
   # The Admin UI must render the true current state even when the toggle was
   # written by a *different* process/container (load-balanced redirect). These
   # methods read straight from the shared backend, bypassing this process's

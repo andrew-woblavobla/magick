@@ -38,6 +38,38 @@ archive stops rewriting everything already in it.
   shutting down a registry with a live Redis subscription raised. The guards now
   use `next`.
 
+- **A Redis outage no longer propagates stale flags across the fleet.** A failed
+  or dropped Redis write was reported (above) but the cache invalidation was
+  published anyway, so every peer dutifully reloaded the *pre-toggle* value from
+  Redis and kept it for the rest of the breaker's timeout. Invalidation is now
+  published only after Redis has genuinely accepted the write — on the sync
+  path, the async path and `#delete` alike. Underneath, `CircuitBreaker#call`
+  raises the new `Magick::CircuitOpenError` (a `Magick::AdapterError`) instead
+  of returning a falsey value indistinguishable from a backend that stored
+  `false`.
+
+- **Read paths are protected by the circuit breaker.** Only writes went through
+  it; `get`, `exists?`, `all_features`, `get_all_data`, `preload!` and the
+  Pub/Sub publish all called Redis directly, so an open circuit protected almost
+  nothing.
+
+- **The default Redis client sets explicit connect, read and write timeouts**
+  (1s each) instead of inheriting redis-rb's 5s defaults. A Redis that
+  black-holes packets never refuses the connection, so an untimed client pinned
+  request threads for 5s per call while the breaker sat open with no errors to
+  count. Override individually: `redis url: ..., read_timeout: 2.0`.
+
+- **A failed half-open probe re-opens the circuit immediately.** Moving to
+  half-open reset the failure count, so re-opening needed the full threshold
+  again and a permanently dead Redis absorbed several requests per timeout
+  cycle. Half-open now admits exactly one probe.
+
+- **`Registry#exists?` is fail-safe.** It was the one read method with no
+  rescue, so it propagated adapter errors to callers outside the fail-safe
+  evaluation path, breaking the documented "never raises" contract. It now
+  returns `false` when the backend is unavailable; `all_features` is likewise
+  fail-safe.
+
 - **Cross-container cache invalidation is no longer dropped.** Invalidation
   messages now carry the publishing registry's identity (`Registry#publisher_id`,
   re-minted after a fork), and a subscriber ignores only the messages it
