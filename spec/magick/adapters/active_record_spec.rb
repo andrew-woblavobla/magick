@@ -154,11 +154,13 @@ if defined?(::ActiveRecord::Base)
         expect(adapter.get(:test_feature, 'value')).to eq(3.14)
       end
 
-      it 'stores and retrieves hash values' do
-        hash_value = { key1: 'value1', key2: 123 }
-        adapter.set(:test_feature, 'targeting', hash_value)
-        retrieved = adapter.get(:test_feature, 'targeting')
-        expect(retrieved).to eq(hash_value)
+      # Adapters are a JSON key/value store: Memory and Redis physically
+      # round-trip through JSON, so hash keys come back as strings. This
+      # adapter returns the same shape rather than symbolizing, so a flag does
+      # not evaluate differently depending on which layer served the read.
+      it 'stores hash values and returns them string-keyed, like the other adapters' do
+        adapter.set(:test_feature, 'targeting', { key1: 'value1', key2: 123 })
+        expect(adapter.get(:test_feature, 'targeting')).to eq({ 'key1' => 'value1', 'key2' => 123 })
       end
 
       it 'stores and retrieves array values' do
@@ -347,28 +349,36 @@ if defined?(::ActiveRecord::Base)
         expect(adapter.get(:test_feature, 'value')).to be false
       end
 
-      it 'preserves complex nested structures' do
-        complex_value = {
-          targeting: {
-            user: [1, 2, 3],
-            group: %w[admin beta],
-            percentage_users: 50.5
-          },
-          metadata: {
-            created_at: '2024-01-01',
-            tags: %w[feature test]
-          }
-        }
-        adapter.set(:test_feature, 'config', complex_value)
-        retrieved = adapter.get(:test_feature, 'config')
-        expect(retrieved).to eq(complex_value)
+      it 'preserves complex nested structures, string-keyed at every depth' do
+        adapter.set(:test_feature, 'config', {
+                      targeting: {
+                        user: [1, 2, 3],
+                        group: %w[admin beta],
+                        percentage_users: 50.5
+                      },
+                      metadata: {
+                        created_at: '2024-01-01',
+                        tags: %w[feature test]
+                      }
+                    })
+
+        expect(adapter.get(:test_feature, 'config')).to eq({
+                                                             'targeting' => {
+                                                               'user' => [1, 2, 3],
+                                                               'group' => %w[admin beta],
+                                                               'percentage_users' => 50.5
+                                                             },
+                                                             'metadata' => {
+                                                               'created_at' => '2024-01-01',
+                                                               'tags' => %w[feature test]
+                                                             }
+                                                           })
       end
 
       it 'handles arrays with mixed types' do
-        mixed_array = [1, 'string', true, false, { key: 'value' }, [1, 2, 3]]
-        adapter.set(:test_feature, 'mixed', mixed_array)
+        adapter.set(:test_feature, 'mixed', [1, 'string', true, false, { key: 'value' }, [1, 2, 3]])
         retrieved = adapter.get(:test_feature, 'mixed')
-        expect(retrieved).to eq(mixed_array)
+        expect(retrieved).to eq([1, 'string', true, false, { 'key' => 'value' }, [1, 2, 3]])
       end
     end
 

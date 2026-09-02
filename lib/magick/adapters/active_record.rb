@@ -195,13 +195,17 @@ module Magick
         # For ActiveRecord 8.1+ with attribute :json, booleans are already booleans
         # For older versions with serialize, we convert from strings
         case value
-        when Hash
-          # JSON serialization converts symbol keys to strings
-          # Convert string keys back to symbols for consistency with input
-          symbolize_hash_keys(value)
-        when Array
-          # Recursively process array elements
-          value.map { |v| v.is_a?(Hash) ? symbolize_hash_keys(v) : v }
+        when Hash, Array
+          # Same shape every adapter returns: Memory and Redis physically
+          # round-trip through JSON, so nested keys come back as strings.
+          # ActiveRecord can hand back the very Ruby object that was written
+          # (the :json attribute keeps it until the record is re-read), so it
+          # normalizes deliberately — otherwise the first read after boot
+          # yields symbols, every cached read after it yields strings, and the
+          # same flag evaluates differently depending on the serving layer.
+          # Callers that want symbols normalize once at their own boundary
+          # (see Feature#normalize_targeting).
+          deep_stringify(value)
         when 'true'
           # String 'true' from older serialize - convert to boolean
           true
@@ -216,12 +220,16 @@ module Magick
         end
       end
 
-      def symbolize_hash_keys(hash)
-        return hash unless hash.is_a?(Hash)
-
-        hash.each_with_object({}) do |(k, v), result|
-          key = k.is_a?(String) ? k.to_sym : k
-          result[key] = v.is_a?(Hash) ? symbolize_hash_keys(v) : (v.is_a?(Array) ? v.map { |item| item.is_a?(Hash) ? symbolize_hash_keys(item) : item } : v)
+      def deep_stringify(value)
+        case value
+        when Hash
+          value.each_with_object({}) { |(k, v), result| result[k.to_s] = deep_stringify(v) }
+        when Array
+          value.map { |v| deep_stringify(v) }
+        when Symbol
+          value.to_s
+        else
+          value
         end
       end
     end

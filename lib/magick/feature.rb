@@ -883,6 +883,11 @@ module Magick
     end
 
     def persist_targeting
+      # Normalize on the way out too, so the in-memory hash a writer keeps
+      # matches the one a reload produces. Without this the writing process
+      # evaluates a flag against a shape no other process ever sees.
+      @targeting = normalize_targeting(targeting)
+
       # Save targeting to adapter (this updates memory synchronously, then Redis/AR)
       # The set method already publishes cache invalidation to other processes via Pub/Sub
       adapter_registry.set(name, 'targeting', targeting)
@@ -949,10 +954,17 @@ module Magick
       @_loaded_group = all_data['group']
     end
 
+    # Canonical in-memory targeting shape: symbol keys at every depth.
+    # Adapters hand targeting back JSON-shaped (string keys all the way down),
+    # so symbolizing only the top level left variants and custom attributes
+    # string-keyed and invisible to their symbol-only readers. This is the one
+    # place stored targeting enters the object, and #persist_targeting applies
+    # the same pass on the way out, so what a writer holds in memory is
+    # exactly what a reader gets back after a reload.
     def normalize_targeting(raw)
       return {} unless raw.is_a?(Hash)
 
-      normalized = raw.transform_keys(&:to_sym)
+      normalized = TargetingPayload.deep_symbolize(raw)
       normalized[:percentage_users] = normalized[:percentage_users].to_f if normalized[:percentage_users]
       normalized[:percentage_requests] = normalized[:percentage_requests].to_f if normalized[:percentage_requests]
       normalized

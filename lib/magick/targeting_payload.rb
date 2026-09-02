@@ -233,5 +233,28 @@ module Magick
         value
       end
     end
+
+    # Inverse of deep_stringify, for the storage boundary: every adapter
+    # round-trips through JSON, so a stored targeting hash comes back
+    # string-keyed at EVERY depth. The evaluation path (variants, custom
+    # attributes, complex conditions) reads symbols, so the canonical shape
+    # is restored in one pass on load rather than teaching each reader both
+    # spellings — which is how variants silently stopped resolving in every
+    # process that did not write them.
+    #
+    # Keys that cannot become symbols are left as-is: a malformed blob must
+    # not turn loading a feature into an exception.
+    def deep_symbolize(value)
+      case value
+      when Hash
+        value.each_with_object({}) do |(k, v), h|
+          h[k.respond_to?(:to_sym) ? k.to_sym : k] = deep_symbolize(v)
+        end
+      when Array
+        value.map { |v| deep_symbolize(v) }
+      else
+        value
+      end
+    end
   end
 end

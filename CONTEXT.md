@@ -7,9 +7,18 @@ Domain glossary. Use these terms exactly; avoid the synonyms noted under each.
 **Targeting** — the set of rules on a feature that scope who/what it is
 enabled for (users, groups, roles, tags, IPs, percentages, date ranges,
 custom attributes, complex conditions) plus their exclusion counterparts.
-Stored internally as one hash (`Feature#targeting`, symbol keys). *Variants
-are not targeting* — they live inside the same internal hash for storage
-reasons only.
+Stored internally as one hash (`Feature#targeting`, symbol keys **at every
+depth** — see "Storage shape"). *Variants are not targeting* — they live
+inside the same internal hash for storage reasons only.
+
+**Storage shape** — what an adapter hands back. All three adapters return
+JSON-native structures: **string keys at every depth**, because Memory and
+Redis physically round-trip through JSON and ActiveRecord normalizes to
+match. `Feature#normalize_targeting` is the single boundary that converts
+that to the internal symbol-keyed shape on load, and `#persist_targeting`
+applies the same pass on write, so a flag evaluates identically in the
+process that wrote it and in every process that only read it. Readers must
+not handle both key spellings — that is what hid the round-trip bug.
 
 **Wire targeting payload** — the JSON representation of targeting exchanged
 with control planes: string keys, list rules as arrays of strings,

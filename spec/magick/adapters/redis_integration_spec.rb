@@ -23,6 +23,18 @@ RSpec.describe Magick::Adapters::Redis, 'integration', if: ENV['REDIS_URL'] && d
     expect(adapter.get(:foo, 'value')).to be true
   end
 
+  # Against a live server, not just the serialization logic: all three adapters
+  # must hand nested structures back in the same shape (string keys at every
+  # depth), or the same flag evaluates differently depending on which layer
+  # served the read. See spec/magick/targeting_round_trip_spec.rb.
+  it 'returns nested structures string-keyed at every depth' do
+    adapter.set(:foo, 'targeting', { variants: [{ name: 'control', value: { copy: 'hello' } }] })
+
+    expect(adapter.get(:foo, 'targeting')).to eq(
+      { 'variants' => [{ 'name' => 'control', 'value' => { 'copy' => 'hello' } }] }
+    )
+  end
+
   it 'enumerates keys via SCAN' do
     adapter.set(:a, 'value', 1)
     adapter.set(:b, 'value', 2)
