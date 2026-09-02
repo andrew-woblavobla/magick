@@ -316,6 +316,41 @@ if defined?(::ActiveRecord::Base)
       end
     end
 
+    describe 'prefix-scoped bulk loads' do
+      before do
+        adapter.set('billing', 'value', true)
+        adapter.set('__magick_versions:billing#v1', 'snapshot', { 'version' => 1 })
+        adapter.set('__magick_versions:billing#v2', 'snapshot', { 'version' => 2 })
+      end
+
+      it 'loads only the features under the prefix' do
+        loaded = adapter.load_features_data_with_prefix('__magick_versions:')
+
+        expect(loaded.keys).to match_array(%w[__magick_versions:billing#v1 __magick_versions:billing#v2])
+        expect(loaded['__magick_versions:billing#v1']['snapshot']).to eq({ 'version' => 1 })
+      end
+
+      it 'loads everything except the features under the reserved prefixes' do
+        adapter.set('__magick_audit:billing', 'entry_1', { 'action' => 'enable' })
+
+        expect(adapter.load_features_data_without_prefixes(['__magick_versions:', '__magick_audit:']).keys)
+          .to eq(['billing'])
+      end
+
+      # '_' is a single-character wildcard in SQL LIKE, so an unescaped prefix
+      # would match (and therefore wrongly exclude) names that merely resemble it.
+      it 'treats LIKE metacharacters in the prefix as literals' do
+        adapter.set('XXmagick_versions:decoy', 'value', true)
+        adapter.set('a%b', 'value', true)
+
+        expect(adapter.load_features_data_with_prefix('__magick_versions:').keys)
+          .not_to include('XXmagick_versions:decoy')
+        expect(adapter.load_features_data_without_prefixes(['__magick_versions:']).keys)
+          .to include('XXmagick_versions:decoy', 'a%b')
+        expect(adapter.load_features_data_with_prefix('a%').keys).to eq(['a%b'])
+      end
+    end
+
     describe 'serialization and deserialization' do
       it 'correctly serializes boolean values' do
         adapter.set(:test_feature, 'value', true)

@@ -715,12 +715,22 @@ Magick.configure do
 end
 ```
 
-**Version numbers come from the shared store**, not from any one process. Each
-snapshot is stored under its own `version_<n>` key inside the reserved
-`__magick_versions:<name>` namespace, and the number is allocated by an atomic
-counter next to it — a row-locked `UPDATE` on the ActiveRecord row when that
-adapter is configured, otherwise Redis `HSETNX` + `HINCRBY`. Every append
-re-reads the current history rather than trusting a window cached at boot.
+**Version numbers come from the shared store**, not from any one process. The
+number is allocated by an atomic counter — a row-locked `UPDATE` on the
+ActiveRecord row when that adapter is configured, otherwise Redis `HSETNX` +
+`HINCRBY`. Every append re-reads the current history rather than trusting a
+window cached at boot.
+
+**Snapshots are stored one per key, and in ActiveRecord one per row.** The hot
+window keeps each snapshot under its own `version_<n>` key in the reserved
+`__magick_versions:<name>` namespace; the archive gives each snapshot a row of
+its own, `__magick_versions:<name>#v<n>`, with the counter in
+`__magick_versions:<name>#seq`. An ActiveRecord write rewrites the whole row it
+touches, so keeping the history in one row would make appending version N cost a
+rewrite of all N-1 before it. Nothing in that namespace is a feature: like the
+audit namespace, it is skipped by `all_features`, by the cache preload, and by
+the Admin UI's source refresh — and skipped in the store, not after loading, so
+an unbounded archive is never read into a worker's memory cache.
 
 That is what makes history correct across containers: two processes saving at
 the same time interleave into one list, neither loses a snapshot, and
@@ -730,7 +740,12 @@ the counter process-local.
 
 **Custom adapters:** an adapter used with versioning should implement
 `#next_sequence(feature_name, key, floor:)` and `#delete_key(feature_name, key)`
-in addition to the usual read/write methods. `Magick::Adapters::Base` ships a
+in addition to the usual read/write methods. One that can filter by name in its
+store should also override `#load_features_data_with_prefix(prefix)` and
+`#load_features_data_without_prefixes(prefixes)`; the inherited defaults are
+correct but read everything before discarding it.
+
+`Magick::Adapters::Base` ships a
 read-modify-write `#next_sequence` that is correct for a store only one process
 can reach; an adapter backed by a store **shared between processes** must
 override it with something genuinely atomic, or two processes will be handed the

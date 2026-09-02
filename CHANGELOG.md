@@ -24,6 +24,11 @@ All notable changes to `magick-feature-flags` are documented in this file.
   shared `Magick::AdminUI::Authentication` filter, and the specs assert
   enforcement across the engine's whole route set rather than one route at a
   time.
+Version history is no longer numbered per process. Fixes a 1.5.0 regression in
+which two containers over one shared backend destroyed each other's snapshots
+and disagreed about what a version number contained. Version snapshots also
+stop leaking into the paths that only ever want features, and appending to the
+archive stops rewriting everything already in it.
 
 ### Fixes
 
@@ -52,6 +57,10 @@ All notable changes to `magick-feature-flags` are documented in this file.
   archive is no longer clobbered by a locally-computed number colliding with
   one already in use.
 
+  `version_<n>` keys rather than as a single `versions` list that every append
+  rewrote wholesale. An append no longer overwrites entries another process
+  wrote in between, and the archive is no longer clobbered by a
+  locally-computed number colliding with one already in use.
 - **Reads prefer the shared store.** Where memory, Redis and the archive
   disagree about a number (only possible for history written before this
   change), the durable shared copy wins, so a version resolves to the same
@@ -93,7 +102,22 @@ All notable changes to `magick-feature-flags` are documented in this file.
 - **Bookkeeping namespaces stay out of the feature cache.** Version snapshots
   and audit history are no longer preloaded into the memory cache or returned
   by the Admin UI's bulk refresh, alongside the existing filtering in
-  `all_features`.
+  `all_features`. Both the boot-time preload (`Magick.preload!`, run in every
+  worker) and the Admin UI's per-render source refresh previously pulled the
+  entire version archive into the memory adapter — measured at ~37 KB for 120
+  toggles of one flag, so tens of megabytes per worker on an install with a few
+  thousand versions across a few hundred flags, and a visibly slow admin index.
+  The reserved namespaces are now filtered **in the store** (a SQL `NOT LIKE`,
+  a Redis key filter applied before the values are fetched), so those rows are
+  never read at all rather than read and discarded.
+
+- **Appending a version writes one version.** The ActiveRecord archive keeps one
+  row per snapshot instead of one key per snapshot inside the feature's single
+  row. That adapter's write path reads a whole row, merges one key and writes it
+  all back under a row lock, so appending version N rewrote all N-1 predecessors
+  with it. The version counter moved to a row of its own for the same reason.
+  Appending to a 107-version history now writes 761 bytes where it previously
+  wrote the whole 33 KB archive.
 
 - **Adapter write failures are visible in production.** A failed Redis or
   ActiveRecord write in the registry used to be reported with a bare `warn`
@@ -136,7 +160,13 @@ All notable changes to `magick-feature-flags` are documented in this file.
   `require_role` nil still permits access, so hosts gating at the router are
   unaffected.
 
-- **New adapter primitives.** `Magick::Adapters::Base` gains
+- **New adapter primitives for prefix-scoped bulk loads.**
+  `Magick::Adapters::Base` gains `#load_features_data_with_prefix(prefix)` and
+  `#load_features_data_without_prefixes(prefixes)`, overridden by the Redis and
+  ActiveRecord adapters to filter in the store. The inherited defaults load
+  everything and filter in Ruby: correct, but they still read what they discard.
+
+- **New adapter primitives for shared counters.** `Magick::Adapters::Base` gains
   `#next_sequence(feature_name, key, floor:)` and
   `#delete_key(feature_name, key)`, implemented atomically by the memory, Redis
   and ActiveRecord adapters and exposed on the registry. Custom adapters
@@ -174,6 +204,14 @@ All notable changes to `magick-feature-flags` are documented in this file.
   entries to `version_<n>` keys and continues numbering above them. Nothing to
   run by hand. During a rolling deploy, processes still on the old code keep
   numbering locally, so finish the rollout before relying on the guarantee.
+
+- **Archives written before this release stay readable.** Snapshots kept as
+  `version_<n>` keys inside the feature's `__magick_versions:<name>` row are
+  read in place, so `get_versions` and `rollback` keep working across the
+  upgrade. They are left where they are rather than rewritten: nothing writes
+  to that row any more, so it costs one read and never grows. New snapshots go
+  to `__magick_versions:<name>#v<n>` rows and numbering continues above the old
+  history. Again, nothing to run by hand.
 
 ## 1.6.0 — 2026-08-05
 

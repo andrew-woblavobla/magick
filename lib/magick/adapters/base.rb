@@ -33,6 +33,28 @@ module Magick
         {}
       end
 
+      # Bulk load every feature whose name starts with +prefix+, and every
+      # feature whose name starts with none of +prefixes+. Bulk callers are
+      # split this way because the reserved bookkeeping namespaces (version
+      # snapshots, audit history) must stay out of the paths that only ever want
+      # features (cache preload, the Admin UI source refresh), while the version
+      # archive wants exactly its own namespace and nothing else.
+      #
+      # Adapters backed by a queryable store SHOULD override these to filter at
+      # the source: the defaults below are correct, but they still read the rows
+      # they then throw away, which is the cost the split exists to avoid.
+      def load_features_data_with_prefix(prefix)
+        prefix = prefix.to_s
+        load_all_features_data.select { |feature_name, _| feature_name.to_s.start_with?(prefix) }
+      end
+
+      def load_features_data_without_prefixes(prefixes)
+        prefixes = Array(prefixes).map(&:to_s)
+        load_all_features_data.reject do |feature_name, _|
+          prefixes.any? { |prefix| feature_name.to_s.start_with?(prefix) }
+        end
+      end
+
       # Bulk set multiple keys for a feature in one call.
       # Subclasses MUST implement this — a no-op default silently drops
       # bulk writes, which is why this used to cause hard-to-diagnose lost

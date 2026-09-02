@@ -153,12 +153,14 @@ if defined?(::ActiveRecord::Base)
       expect(Magick[:shared_demo].enabled?).to be false
     end
 
-    it 'archives one key per version instead of a list every append rewrites' do
+    it 'archives one row per version instead of a list every append rewrites' do
       versioning_a.record_change(feature, action: 'a', snapshot: { marker: 'A0' })
       versioning_b.record_change(feature, action: 'b', snapshot: { marker: 'B0' })
 
-      stored = MagickFeature.find_by(feature_name: "#{described_class::STORE_PREFIX}shared_demo").data
-      expect(stored.keys).to include('version_1', 'version_2')
+      prefix = "#{described_class::STORE_PREFIX}shared_demo#{described_class::ARCHIVE_ROW_INFIX}"
+      rows = MagickFeature.where("feature_name LIKE ?", "#{prefix}%").order(:feature_name)
+      expect(rows.pluck(:feature_name)).to eq(["#{prefix}1", "#{prefix}2"])
+      expect(rows.map { |row| row.data.keys }).to all(eq([described_class::ARCHIVE_DATA_KEY]))
     end
   end
 end

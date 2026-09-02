@@ -37,6 +37,34 @@ RSpec.describe Magick::Adapters::Redis, 'integration', :redis, if: RedisSpecSupp
     expect(adapter.all_features).to match_array(%w[a b])
   end
 
+  describe 'prefix-scoped bulk loads' do
+    let(:reserved) { [Magick::Versioning::STORE_PREFIX, Magick::AuditLog::STORE_PREFIX] }
+
+    before do
+      adapter.set('billing', 'value', true)
+      adapter.set("#{Magick::Versioning::STORE_PREFIX}billing", 'version_1', { 'version' => 1 })
+      adapter.set("#{Magick::AuditLog::STORE_PREFIX}billing", 'entry_1', { 'action' => 'enable' })
+    end
+
+    it 'loads only the features under the prefix' do
+      expect(adapter.load_features_data_with_prefix(Magick::Versioning::STORE_PREFIX).keys)
+        .to eq(["#{Magick::Versioning::STORE_PREFIX}billing"])
+    end
+
+    # The hot window lives in Redis too, so a preload that did not filter here
+    # would pull every cached snapshot into the worker alongside the features.
+    it 'loads everything except the features under the reserved prefixes' do
+      expect(adapter.load_features_data_without_prefixes(reserved).keys).to eq(['billing'])
+    end
+
+    it 'treats glob metacharacters in the prefix as literals' do
+      adapter.set('a*b', 'value', true)
+      adapter.set('axb', 'value', true)
+
+      expect(adapter.load_features_data_with_prefix('a*').keys).to eq(['a*b'])
+    end
+  end
+
   it 'deletes a feature' do
     adapter.set(:gone, 'value', 1)
     adapter.delete(:gone)

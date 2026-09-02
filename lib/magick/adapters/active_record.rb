@@ -99,20 +99,34 @@ module Magick
       end
 
       def load_all_features_data
-        result = {}
-        @model_class.find_each do |record|
-          data = record.data || {}
-          next unless data.is_a?(Hash)
-
-          feature_data = {}
-          data.each do |k, v|
-            feature_data[k.to_s] = deserialize_value(v)
-          end
-          result[record.feature_name] = feature_data
-        end
-        result
+        collect_features_data(@model_class.all)
       rescue StandardError => e
         raise AdapterError, "Failed to load all features from ActiveRecord: #{e.message}"
+      end
+
+      # Prefix filtering happens in SQL so the rows outside the caller's
+      # namespace are never read at all — the point being that a boot-time
+      # preload must not drag the version archive out of the database. The
+      # Ruby-side check is kept as well: LIKE is case-insensitive under some
+      # MySQL collations, so the query may match more than the caller asked for
+      # (never less, since the pattern is escaped).
+      def load_features_data_with_prefix(prefix)
+        prefix = prefix.to_s
+        collect_features_data(@model_class.where(*like_prefix_condition(prefix))) do |feature_name|
+          feature_name.start_with?(prefix)
+        end
+      rescue StandardError => e
+        raise AdapterError, "Failed to load prefixed features from ActiveRecord: #{e.message}"
+      end
+
+      def load_features_data_without_prefixes(prefixes)
+        prefixes = Array(prefixes).map(&:to_s)
+        scope = prefixes.reduce(@model_class.all) { |rel, prefix| rel.where.not(*like_prefix_condition(prefix)) }
+        collect_features_data(scope) do |feature_name|
+          prefixes.none? { |prefix| feature_name.start_with?(prefix) }
+        end
+      rescue StandardError => e
+        raise AdapterError, "Failed to load unprefixed features from ActiveRecord: #{e.message}"
       end
 
       def set_all_data(feature_name, data_hash)
@@ -172,6 +186,35 @@ module Magick
       end
 
       private
+
+      # `!` as the LIKE escape character rather than the customary backslash:
+      # a literal backslash inside a SQL string is itself an escape in MySQL,
+      # so `ESCAPE '\\'` is not portable across the three databases this
+      # adapter supports.
+      LIKE_ESCAPE = '!'
+
+      def like_prefix_condition(prefix)
+        pattern = prefix.gsub(/[!%_]/) { |char| "#{LIKE_ESCAPE}#{char}" }
+        ["feature_name LIKE ? ESCAPE '#{LIKE_ESCAPE}'", "#{pattern}%"]
+      end
+
+      def collect_features_data(scope)
+        result = {}
+        scope.find_each do |record|
+          feature_name = record.feature_name.to_s
+          next if block_given? && !yield(feature_name)
+
+          data = record.data || {}
+          next unless data.is_a?(Hash)
+
+          feature_data = {}
+          data.each do |k, v|
+            feature_data[k.to_s] = deserialize_value(v)
+          end
+          result[record.feature_name] = feature_data
+        end
+        result
+      end
 
       def current_time
         defined?(Time.current) ? Time.current : Time.now

@@ -243,13 +243,18 @@ module Magick
 
       # Bulk load ALL features into memory cache in minimal queries.
       # Call this after configuration to warm the cache.
+      #
+      # Version snapshots and audit history are skipped, exactly as
+      # #all_features skips them: both are unbounded bookkeeping, and pulling
+      # the version archive into every worker's memory cache at boot cost tens
+      # of megabytes per worker on installs with a few thousand versions.
       def preload!
         all_data = {}
 
         # Load from ActiveRecord first (source of truth for persistence)
         if active_record_adapter
           begin
-            all_data = active_record_adapter.load_all_features_data
+            all_data = load_features_only(active_record_adapter)
           rescue StandardError, AdapterError
             # AR failed, try Redis
           end
@@ -258,7 +263,7 @@ module Magick
         # Merge/override with Redis data (more up-to-date than AR in most setups)
         if redis_adapter
           begin
-            redis_data = redis_adapter.load_all_features_data
+            redis_data = load_features_only(redis_adapter)
             redis_data.each do |feature_name, data|
               all_data[feature_name] ||= {}
               all_data[feature_name].merge!(data)
@@ -394,9 +399,13 @@ module Magick
       # Version snapshots and audit history live under reserved pseudo-feature
       # namespaces. The constants are resolved lazily because those classes are
       # loaded after this one.
+      def reserved_store_prefixes
+        [Versioning::STORE_PREFIX, AuditLog::STORE_PREFIX]
+      end
+
       def reserved_store_name?(name)
         name = name.to_s
-        name.start_with?(Versioning::STORE_PREFIX) || name.start_with?(AuditLog::STORE_PREFIX)
+        reserved_store_prefixes.any? { |prefix| name.start_with?(prefix) }
       end
 
       # Signal the subscribe loop to return, then close the connection so any
@@ -549,11 +558,13 @@ module Magick
 
       # Bulk read ALL features from the shared, authoritative backend, skipping
       # the local memory cache. AR preferred (synchronous), Redis fallback.
+      # Reserved namespaces are skipped for the same reason as in #preload!,
+      # and it matters more here: this runs on every Admin UI index render.
       def load_all_from_source
         if active_record_adapter
           begin
-            data = active_record_adapter.load_all_features_data
-            return without_reserved_stores(data) if data && !data.empty?
+            data = load_features_only(active_record_adapter)
+            return data unless data.empty?
           rescue StandardError, AdapterError
             # fall through to Redis
           end
@@ -561,13 +572,27 @@ module Magick
 
         if redis_adapter
           begin
-            return without_reserved_stores(circuit_breaker.call { redis_adapter.load_all_features_data })
+            return circuit_breaker.call { load_features_only(redis_adapter) }
           rescue StandardError, AdapterError
             {}
           end
         end
 
         {}
+      end
+
+      # Everything in the store except the reserved bookkeeping namespaces.
+      # The adapters filter in the store, so those rows are never read at all —
+      # discarding an unbounded archive after loading it still pays for the
+      # read. The reject that follows is a backstop for a custom adapter that
+      # inherits the base implementation instead of overriding it.
+      def load_features_only(adapter)
+        data = if adapter.respond_to?(:load_features_data_without_prefixes)
+                 adapter.load_features_data_without_prefixes(reserved_store_prefixes)
+               else
+                 adapter.load_all_features_data
+               end
+        without_reserved_stores(data)
       end
 
       def without_reserved_stores(data)

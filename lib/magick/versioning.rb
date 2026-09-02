@@ -12,14 +12,23 @@ module Magick
     # deleting a feature does not destroy its ActiveRecord archive row.
     STORE_PREFIX = '__magick_versions:'
 
-    # One store key per snapshot. Appending writes only its own key, so two
-    # containers saving at the same time interleave into one history instead of
-    # each rewriting the whole list over the other's entries.
+    # The hot window keeps one store key per snapshot. Appending writes only its
+    # own key, so two containers saving at the same time interleave into one
+    # history instead of each rewriting the whole list over the other's entries.
     VERSION_KEY_PREFIX = 'version_'
     VERSION_KEY_PATTERN = /\A#{VERSION_KEY_PREFIX}(\d+)\z/.freeze
 
-    # The shared counter that hands out version numbers. Stored next to the
-    # snapshots under a key VERSION_KEY_PATTERN deliberately does not match.
+    # The archive keeps one store ROW per version, not one key per version
+    # inside the feature's single row. An ActiveRecord write is a
+    # read-modify-write of the whole row blob under a row lock, so appending
+    # version N to a shared row rewrote all N-1 predecessors with it; its own
+    # row makes an append cost one snapshot no matter how long the history is.
+    ARCHIVE_ROW_INFIX = '#v'
+    ARCHIVE_DATA_KEY = 'snapshot'
+
+    # The shared counter that hands out version numbers, in a row of its own so
+    # that allocating a number never rewrites archived snapshots alongside it.
+    SEQUENCE_ROW_SUFFIX = '#seq'
     SEQUENCE_KEY = 'sequence'
 
     # 1.5.0 wrote the whole hot window as a single JSON list under this key.
@@ -143,7 +152,7 @@ module Magick
       floor = highest_known_version(name, history, adapter)
       return floor + 1 unless adapter
 
-      number = safely { adapter.next_sequence(store_name(name), SEQUENCE_KEY, floor: floor) }.to_i
+      number = safely { adapter.next_sequence(sequence_row(name), SEQUENCE_KEY, floor: floor) }.to_i
       return number if number > floor
 
       # No usable allocator (adapter down, or a custom one that does not
@@ -155,7 +164,7 @@ module Magick
     def highest_known_version(name, history, adapter)
       floor = history.keys.max.to_i
       return floor if adapter.nil?
-      return floor unless safely { adapter.get(store_name(name), SEQUENCE_KEY) }.nil?
+      return floor unless safely { adapter.get(sequence_row(name), SEQUENCE_KEY) }.nil?
 
       # First allocation against this store, so the counter is about to be
       # seeded: look at the archive too, which may hold far higher numbers than
@@ -163,12 +172,15 @@ module Magick
       [floor, archive_high_water(name)].max
     end
 
+    # The hot window keeps one key per snapshot inside the feature's store
+    # entry (memory is a plain hash, Redis an HSET — both write just that key);
+    # the archive keeps one row per snapshot, since its adapter rewrites a whole
+    # row per write. Either way an append writes one version's worth of data.
     def persist(name, entry)
       payload = entry.to_h
-      key = version_key(entry.version)
-      hot_adapters.each { |adapter| safely { adapter.set(store_name(name), key, payload) } }
+      hot_adapters.each { |adapter| safely { adapter.set(store_name(name), version_key(entry.version), payload) } }
       archive = archive_adapter
-      safely { archive.set(store_name(name), key, payload) } if archive
+      safely { archive.set(archive_row(name, entry.version), ARCHIVE_DATA_KEY, payload) } if archive
     end
 
     # Retention for the hot window, keyed off the number just allocated rather
@@ -229,24 +241,50 @@ module Magick
       hot_adapters.to_h { |adapter| [adapter, adapter_data(adapter, name)] }
     end
 
+    # One row per snapshot, plus whatever an archive written before this layout
+    # left inside the feature's single row. Pre-existing history is read in
+    # place rather than rewritten: nothing writes to that row any more, so it
+    # costs a read and never grows.
     def archive_entries(name)
       adapter = archive_adapter
       return {} unless adapter
 
+      entries = legacy_archive_entries(adapter, name)
+      rows = safely { adapter.load_features_data_with_prefix(archive_row_prefix(name)) }
+      (rows.is_a?(Hash) ? rows : {}).each do |row, data|
+        number = archive_row_number(name, row)
+        next unless number
+
+        entry = rehydrate(archived_payload(data))
+        entries[entry.version] = entry if entry && entry.version == number
+      end
+      entries
+    end
+
+    # Snapshots an older release wrote as version_<n> keys (or a 1.5.0 list)
+    # inside the feature's own archive row.
+    def legacy_archive_entries(adapter, name)
       entries_in(adapter_data(adapter, name))
     end
 
-    # Highest archived number, read from the keys alone: rehydrating an
-    # unlimited archive just to find its maximum would be wasteful.
+    # Highest archived number, read from row and key names alone: rehydrating an
+    # unlimited archive just to find its maximum would be wasteful. Only reached
+    # when the store has no counter yet, so this is a once-per-feature cost on
+    # upgrade rather than something an append pays.
     def archive_high_water(name)
       adapter = archive_adapter
       return 0 unless adapter
 
-      numbers = adapter_data(adapter, name).keys.filter_map do |key|
+      legacy = adapter_data(adapter, name).keys.filter_map do |key|
         match = VERSION_KEY_PATTERN.match(key.to_s)
         match && match[1].to_i
       end
-      numbers.max.to_i
+      (legacy + archive_row_numbers(adapter, name)).max.to_i
+    end
+
+    def archive_row_numbers(adapter, name)
+      rows = safely { adapter.load_features_data_with_prefix(archive_row_prefix(name)) }
+      (rows.is_a?(Hash) ? rows.keys : []).filter_map { |row| archive_row_number(name, row) }
     end
 
     def adapter_data(adapter, name)
@@ -283,14 +321,19 @@ module Magick
       entries.values.sort_by(&:version)
     end
 
-    # Read the snapshot for one number, most authoritative source first, so
-    # every process resolves the same number to the same snapshot.
+    # Read the snapshot for one number, most authoritative source first — the
+    # durable archive, then the shared hot store, then this process's own
+    # memory cache — so every process resolves the same number to the same
+    # snapshot.
     def find_version(feature_name, version)
       name = feature_name.to_s
       number = version.to_i
       return nil unless number.positive?
 
-      adapters_by_authority.each do |adapter|
+      entry = archived_version(name, number)
+      return entry if entry
+
+      hot_adapters.reverse_each do |adapter|
         raw = safely { adapter.get(store_name(name), version_key(number)) }
         entry = raw && rehydrate(raw)
         return entry if entry
@@ -300,14 +343,19 @@ module Magick
       hot_entries(name)[number]
     end
 
-    # Most authoritative source first: the durable archive, then the shared hot
-    # store, then this process's own memory cache.
-    def adapters_by_authority
-      ([archive_adapter] + hot_adapters.reverse).compact
+    # Its own row since the archive stopped sharing one; a version_<n> key in
+    # the feature's row before that.
+    def archived_version(name, number)
+      adapter = archive_adapter
+      return nil unless adapter
+
+      raw = safely { adapter.get(archive_row(name, number), ARCHIVE_DATA_KEY) }
+      raw ||= safely { adapter.get(store_name(name), version_key(number)) }
+      raw && rehydrate(raw)
     end
 
     # Hot window lives in memory + Redis (capped); the ActiveRecord adapter
-    # keeps the unlimited archive, one version_<n> key per entry.
+    # keeps the unlimited archive, one row per entry.
     def hot_adapters
       registry = @adapter_registry
       if registry.respond_to?(:memory_adapter)
@@ -323,10 +371,10 @@ module Magick
     end
 
     # A counter needs exactly one authority, so this picks a single adapter
-    # instead of fanning out like writes do. ActiveRecord first: its counter
-    # lives in the same row as the archive it numbers and so can never fall
-    # behind it; then Redis; then, with no shared backend configured at all,
-    # this process's own memory.
+    # instead of fanning out like writes do. ActiveRecord first — it is the
+    # durable store, and a counter that outlives a Redis flush is the one that
+    # cannot hand out a number the archive has already used; then Redis; then,
+    # with no shared backend configured at all, this process's own memory.
     def sequence_adapter
       registry = @adapter_registry
       return registry unless registry.respond_to?(:memory_adapter)
@@ -340,6 +388,39 @@ module Magick
 
     def version_key(number)
       "#{VERSION_KEY_PREFIX}#{number}"
+    end
+
+    def sequence_row(name)
+      "#{store_name(name)}#{SEQUENCE_ROW_SUFFIX}"
+    end
+
+    def archive_row(name, number)
+      "#{archive_row_prefix(name)}#{number}"
+    end
+
+    def archive_row_prefix(name)
+      "#{store_name(name)}#{ARCHIVE_ROW_INFIX}"
+    end
+
+    # The number a row name carries, or nil when it is not an archive row for
+    # this feature. A feature literally named "flag#v2" archives under the same
+    # prefix as "flag", so the suffix must be a bare number to count: that
+    # feature's rows end in "2#v<n>" and are rejected here rather than read as
+    # part of "flag"'s history.
+    def archive_row_number(name, row)
+      row = row.to_s
+      prefix = archive_row_prefix(name)
+      return nil unless row.start_with?(prefix)
+
+      suffix = row[prefix.length..]
+      suffix.match?(/\A\d+\z/) ? suffix.to_i : nil
+    end
+
+    # An archive row holds the snapshot under a single key.
+    def archived_payload(data)
+      return nil unless data.is_a?(Hash)
+
+      data[ARCHIVE_DATA_KEY] || data[ARCHIVE_DATA_KEY.to_sym]
     end
 
     def rehydrate(raw)

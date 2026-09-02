@@ -57,29 +57,34 @@ module Magick
       end
 
       def load_all_features_data
-        keys = scan_keys
-        return {} if keys.empty?
-
-        # Pipeline all HGETALL calls to avoid N+1 round-trips
-        raw_results = redis.pipelined do |pipeline|
-          keys.each { |key| pipeline.hgetall(key) }
-        end
-
-        result = {}
-        keys.each_with_index do |key, idx|
-          feature_name = key.sub("#{namespace}:", '')
-          raw = raw_results[idx]
-          next if raw.nil? || raw.empty?
-
-          feature_data = {}
-          raw.each do |k, v|
-            feature_data[k.to_s] = deserialize_value(v)
-          end
-          result[feature_name] = feature_data
-        end
-        result
+        fetch_features_data(scan_keys)
       rescue StandardError => e
         raise AdapterError, "Failed to load all features from Redis: #{e.message}"
+      end
+
+      # SCAN does the narrowing server-side; the Ruby check that follows guards
+      # against a glob metacharacter in the prefix widening the match.
+      def load_features_data_with_prefix(prefix)
+        prefix = prefix.to_s
+        keys = scan_keys(match: "#{glob_escape(prefix)}*")
+        fetch_features_data(keys.select { |key| feature_name_from(key).start_with?(prefix) })
+      rescue StandardError => e
+        raise AdapterError, "Failed to load prefixed features from Redis: #{e.message}"
+      end
+
+      # SCAN has no negative MATCH, so the keys are filtered by name before the
+      # pipeline runs. Only the names travel; the excluded hashes are never
+      # fetched, which is the whole point — the version archive is the bulk of
+      # the payload a preload would otherwise pull down.
+      def load_features_data_without_prefixes(prefixes)
+        prefixes = Array(prefixes).map(&:to_s)
+        keys = scan_keys.reject do |key|
+          name = feature_name_from(key)
+          prefixes.any? { |prefix| name.start_with?(prefix) }
+        end
+        fetch_features_data(keys)
+      rescue StandardError => e
+        raise AdapterError, "Failed to load unprefixed features from Redis: #{e.message}"
       end
 
       def set_all_data(feature_name, data_hash)
@@ -133,8 +138,8 @@ module Magick
       # Use SCAN instead of KEYS to avoid blocking Redis.
       # A mid-scan timeout would otherwise lose the cursor; retry once with
       # exponential backoff before surfacing the error to the caller.
-      def scan_keys
-        pattern = "#{namespace}:*"
+      def scan_keys(match: '*')
+        pattern = "#{namespace}:#{match}"
         keys = []
         cursor = '0'
         retries = 0
@@ -156,6 +161,39 @@ module Magick
 
       def key_for(feature_name)
         "#{namespace}:#{feature_name}"
+      end
+
+      def feature_name_from(key)
+        key.sub("#{namespace}:", '')
+      end
+
+      # SCAN MATCH takes a glob, so a prefix containing *, ?, [ or a
+      # backslash would match keys the caller did not ask for.
+      def glob_escape(pattern)
+        pattern.gsub(/[\\*?\[\]]/) { |char| "\\#{char}" }
+      end
+
+      # One pipelined HGETALL per key, so a bulk load costs a single round-trip
+      # rather than one per feature.
+      def fetch_features_data(keys)
+        return {} if keys.empty?
+
+        raw_results = redis.pipelined do |pipeline|
+          keys.each { |key| pipeline.hgetall(key) }
+        end
+
+        result = {}
+        keys.each_with_index do |key, idx|
+          raw = raw_results[idx]
+          next if raw.nil? || raw.empty?
+
+          feature_data = {}
+          raw.each do |k, v|
+            feature_data[k.to_s] = deserialize_value(v)
+          end
+          result[feature_name_from(key)] = feature_data
+        end
+        result
       end
 
       def default_redis_client
