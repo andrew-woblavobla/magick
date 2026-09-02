@@ -1171,8 +1171,33 @@ After checking out the repo, run:
 
 ```bash
 bundle install
-rspec
+bundle exec rspec       # full suite; needs no external services
+bundle exec rubocop     # linter
 ```
+
+### Redis integration specs
+
+The specs that exercise the Redis adapter, Pub/Sub cache invalidation, and the
+circuit breaker need a real Redis. They are opt-in, so a contributor without
+Redis is never blocked — `bundle exec rspec` skips them and stays green.
+
+```bash
+redis-server &                        # or: docker run -p 6379:6379 redis:7
+bundle exec rake spec:redis           # defaults to REDIS_URL=redis://localhost:6379/1
+REDIS_URL=redis://elsewhere:6379/1 bundle exec rake spec:redis
+```
+
+They run in their own RSpec process on purpose. Requiring the `redis` gem
+defines `::Redis`, and Magick's adapter auto-detection keys off
+`defined?(Redis)` — sharing a process would silently point the rest of the suite
+at a real Redis and leak state between examples.
+
+`rake spec:redis` sets `MAGICK_REDIS_SPECS=1`, which makes the gate strict: an
+unreachable Redis aborts the run rather than quietly skipping. CI relies on this,
+plus a check that the executed example count is non-zero, so the build cannot go
+green on specs that never ran. **Note that `rake spec:redis` calls `FLUSHDB` on
+the database in `REDIS_URL`** — point it at a scratch database, not one holding
+data you care about.
 
 ## Contributing
 

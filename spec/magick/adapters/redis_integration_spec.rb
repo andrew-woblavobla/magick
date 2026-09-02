@@ -2,14 +2,10 @@
 
 require 'spec_helper'
 
-begin
-  require 'redis'
-rescue LoadError
-  # redis gem not installed; whole file will be skipped below
-end
-
-RSpec.describe Magick::Adapters::Redis, 'integration', if: ENV['REDIS_URL'] && defined?(::Redis) do
-  let(:client) { ::Redis.new(url: ENV.fetch('REDIS_URL')) }
+# Run these with `rake spec:redis` (or MAGICK_REDIS_SPECS=1 REDIS_URL=... rspec
+# <this file>). See spec/support/redis.rb for why they get their own process.
+RSpec.describe Magick::Adapters::Redis, 'integration', :redis, if: RedisSpecSupport.available? do
+  let(:client) { RedisSpecSupport.new_client }
   let(:adapter) { described_class.new(client) }
 
   around do |ex|
@@ -50,8 +46,8 @@ RSpec.describe Magick::Adapters::Redis, 'integration', if: ENV['REDIS_URL'] && d
   it 'publishes cache invalidation that a second registry observes' do
     memory1 = Magick::Adapters::Memory.new
     memory2 = Magick::Adapters::Memory.new
-    r1 = Magick::Adapters::Registry.new(memory1, described_class.new(::Redis.new(url: ENV.fetch('REDIS_URL'))))
-    r2 = Magick::Adapters::Registry.new(memory2, described_class.new(::Redis.new(url: ENV.fetch('REDIS_URL'))))
+    r1 = Magick::Adapters::Registry.new(memory1, described_class.new(RedisSpecSupport.new_client))
+    r2 = Magick::Adapters::Registry.new(memory2, described_class.new(RedisSpecSupport.new_client))
 
     sleep 0.2 # let subscriber connect
     memory2.set(:foo, 'value', 'stale')

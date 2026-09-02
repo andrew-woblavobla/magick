@@ -553,7 +553,11 @@ module Magick
 
         @subscriber_thread = Thread.new do
           redis_client = redis_adapter.client
-          return unless redis_client
+          # `next`, not `return`: `return` from a block raises LocalJumpError,
+          # which the block-level rescue below would treat as a subscription
+          # failure and spin on. `next` ends the thread, which is what these
+          # guards mean.
+          next unless redis_client
 
           begin
             # Wrap dup in error handling to catch RSpec mock errors
@@ -566,7 +570,7 @@ module Magick
                              e.message&.include?('stub') ||
                              e.message&.include?('mock') ||
                              (defined?(Rails) && Rails.env.test?)
-            return if is_rspec_error
+            next if is_rspec_error
 
             # Re-raise in non-test environments for unexpected errors
             raise
@@ -599,11 +603,11 @@ module Magick
                            e.message&.include?('stub') ||
                            e.message&.include?('mock') ||
                            (defined?(Rails) && Rails.env.test?)
-          return if is_rspec_error
+          next if is_rspec_error
 
           # Stop cleanly during app shutdown instead of sleeping + retrying,
           # which would keep the process alive and delay termination.
-          return if @stopping
+          next if @stopping
 
           warn "Cache invalidation subscriber error: #{e.message}" if defined?(Rails) && Rails.env.development?
           sleep 5

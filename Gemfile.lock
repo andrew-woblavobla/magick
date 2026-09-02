@@ -49,6 +49,10 @@ GEM
     rack (3.2.6)
     rainbow (3.1.1)
     rake (13.3.1)
+    redis (5.4.1)
+      redis-client (>= 0.22.0)
+    redis-client (0.30.1)
+      connection_pool
     regexp_parser (2.11.3)
     request_store (1.7.0)
       rack (>= 1.4)
@@ -102,6 +106,7 @@ DEPENDENCIES
   activerecord (>= 6.0, < 9.0)
   magick-feature-flags!
   rake (~> 13.0)
+  redis (~> 5.0)
   request_store (~> 1.5)
   rspec (~> 3.12)
   rubocop (~> 1.50)

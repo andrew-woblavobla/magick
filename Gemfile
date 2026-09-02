@@ -17,4 +17,6 @@ group :development, :test do
   gem 'sqlite3', '~> 2.0', require: false
   # Optional dependency powering per-request caching of feature checks
   gem 'request_store', '~> 1.5', require: false
+  # Optional dependency for Redis adapter / Pub/Sub integration testing
+  gem 'redis', '~> 5.0', require: false
 end

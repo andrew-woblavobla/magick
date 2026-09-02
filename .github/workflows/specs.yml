@@ -23,6 +23,23 @@ jobs:
       matrix:
         ruby-version: ['3.2.0', '3.3.3']
 
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    # Job-level on purpose: the main suite must stay green with REDIS_URL
+    # exported, which is exactly the situation a contributor with a local Redis
+    # is in. Only the step below opts in to actually loading the gem.
+    env:
+      REDIS_URL: redis://localhost:6379/1
+
     steps:
     - uses: actions/checkout@v5
     - name: Set up Ruby
@@ -32,3 +49,24 @@ jobs:
         bundler-cache: true # runs 'bundle install' and caches installed gems automatically
     - name: Run tests
       run: bundle exec rspec
+    # Separate process on purpose: loading the `redis` gem defines ::Redis, and
+    # Magick's adapter auto-detection keys off `defined?(Redis)`, which would
+    # point the rest of the suite at a real Redis. See spec/support/redis.rb.
+    #
+    # MAGICK_REDIS_SPECS=1 makes an unreachable Redis abort the run, and the
+    # count check below fails the step if the examples were filtered out, so
+    # this step cannot go green on specs that never ran.
+    - name: Run Redis integration specs
+      shell: bash
+      env:
+        MAGICK_REDIS_SPECS: '1'
+      run: |
+        bundle exec rspec --tag redis \
+          --format documentation \
+          --format json --out redis-report.json
+        ruby -rjson -e '
+          report = JSON.parse(File.read("redis-report.json"))
+          ran = report.fetch("examples").count { |e| e["status"] == "passed" }
+          abort "No Redis integration examples ran - they were skipped, not executed." if ran.zero?
+          puts "Redis integration examples executed and passed: #{ran}"
+        '

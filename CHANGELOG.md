@@ -16,6 +16,21 @@ All notable changes to `magick-feature-flags` are documented in this file.
   `instance_eval` sink. `MAGICK_ALLOW_CONFIG_EVAL=1` still skips the check for
   a trusted file outside the tree, and is still dangerous.
 
+### Fixes
+
+- **Pub/Sub subscriber shuts down cleanly.** The subscriber thread's early-exit
+  guards used `return` inside a block, which raises `LocalJumpError` instead of
+  ending the thread. `Registry#shutdown` re-raised it out of `Thread#join`, so
+  shutting down a registry with a live Redis subscription raised. The guards now
+  use `next`.
+
+### Development
+
+- The `redis` gem is a development dependency, and CI runs a Redis service, so
+  the Redis adapter, Pub/Sub cache invalidation, and circuit breaker are
+  exercised on every push. Run them locally with `bundle exec rake spec:redis`;
+  the default `bundle exec rspec` still needs no external services.
+
 ## 1.6.0 — 2026-08-05
 
 Wire targeting contract for control-plane APIs. The gem now ships the two

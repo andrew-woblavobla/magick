@@ -29,4 +29,6 @@ Gem::Specification.new do |spec|
   spec.add_development_dependency 'sqlite3', '~> 2.0'
   # Optional dependency powering per-request caching of feature checks
   spec.add_development_dependency 'request_store', '~> 1.5'
+  # Optional dependency for Redis adapter / Pub/Sub integration testing
+  spec.add_development_dependency 'redis', '~> 5.0'
 end
