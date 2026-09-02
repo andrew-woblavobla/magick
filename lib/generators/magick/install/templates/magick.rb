@@ -23,8 +23,14 @@ Magick.configure do
   # Enable performance metrics tracking
   performance_metrics enabled: true
 
-  # Enable audit logging (every mutation is logged under its real action name)
-  audit_log enabled: true
+  # Enable audit logging (every mutation is logged under its real action name).
+  # Entries are written to whichever adapters outlive the process (Redis,
+  # ActiveRecord), so history survives restarts and is shared across
+  # containers; `retention` caps the entries kept per feature there, and
+  # `max_entries` caps the per-process in-memory ring.
+  # Pass `adapter:` to also ship entries to your own sink, `persist: false` to
+  # keep the ring only, or `enabled: false` to record nothing at all.
+  audit_log enabled: true, retention: 200, max_entries: 10_000
 
   # Enable versioning (every save creates a version snapshot; allows rollback)
   # max_versions caps the hot window kept in memory/Redis; the ActiveRecord

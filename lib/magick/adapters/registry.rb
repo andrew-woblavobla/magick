@@ -176,9 +176,9 @@ module Magick
         features += memory_adapter.all_features if memory_adapter
         features += redis_adapter.all_features if redis_adapter
         features += active_record_adapter.all_features if active_record_adapter
-        # Version history is stored under a reserved pseudo-feature namespace;
-        # it is bookkeeping, not a feature.
-        features.uniq.reject { |f| f.to_s.start_with?(Versioning::STORE_PREFIX) }
+        # Version history and audit history are stored under reserved
+        # pseudo-feature namespaces; they are bookkeeping, not features.
+        features.uniq.reject { |f| reserved_store_name?(f) }
       end
 
       # Load all keys for a single feature in one call instead of N separate get() calls
@@ -277,6 +277,10 @@ module Magick
             # Redis failed, use what we have from AR
           end
         end
+
+        # Reserved bookkeeping namespaces (version snapshots, audit history)
+        # are not features: keep their blobs out of the feature cache.
+        all_data = all_data.reject { |feature_name, _| reserved_store_name?(feature_name) }
 
         # Populate memory cache in bulk
         if memory_adapter && !all_data.empty?
@@ -400,6 +404,14 @@ module Magick
         false
       end
 
+      # Version snapshots and audit history live under reserved pseudo-feature
+      # namespaces. The constants are resolved lazily because those classes are
+      # loaded after this one.
+      def reserved_store_name?(name)
+        name = name.to_s
+        name.start_with?(Versioning::STORE_PREFIX) || name.start_with?(AuditLog::STORE_PREFIX)
+      end
+
       # Signal the subscribe loop to return, then close the connection so any
       # retry/reconnect attempt fails fast instead of sleeping for 5s.
       def close_subscriber_connection(subscriber)
@@ -520,7 +532,7 @@ module Magick
         if active_record_adapter
           begin
             data = active_record_adapter.load_all_features_data
-            return data if data && !data.empty?
+            return without_reserved_stores(data) if data && !data.empty?
           rescue StandardError, AdapterError
             # fall through to Redis
           end
@@ -528,13 +540,19 @@ module Magick
 
         if redis_adapter
           begin
-            return circuit_breaker.call { redis_adapter.load_all_features_data } || {}
+            return without_reserved_stores(circuit_breaker.call { redis_adapter.load_all_features_data })
           rescue StandardError, AdapterError
             {}
           end
         end
 
         {}
+      end
+
+      def without_reserved_stores(data)
+        return {} unless data.is_a?(Hash)
+
+        data.reject { |feature_name, _| reserved_store_name?(feature_name) }
       end
 
       # Record that this process just wrote a feature, so the subscriber

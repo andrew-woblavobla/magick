@@ -129,9 +129,18 @@ module Magick
       @performance_metrics
     end
 
-    def audit_log(enabled: true, adapter: nil)
+    # enabled:     false disables audit logging entirely (Magick.audit_log is nil).
+    # adapter:     optional host-supplied sink; receives #append(entry) for every entry.
+    # retention:   entries kept per feature in the durable, shared store.
+    # max_entries: entries kept in the per-process ring, across all features.
+    # persist:     false keeps the ring (and any host adapter) but writes nothing
+    #              to Redis/ActiveRecord — for hosts whose own adapter is the
+    #              system of record.
+    def audit_log(enabled: true, adapter: nil, retention: AuditLog::DEFAULT_RETENTION,
+                  max_entries: AuditLog::DEFAULT_MAX_ENTRIES, persist: true)
+      @audit_log_configured = true
       @audit_log = if enabled
-                     adapter ? AuditLog.new(adapter) : AuditLog.new
+                     AuditLog.new(adapter, max_entries: max_entries, retention: retention, persist: persist)
                    end
     end
 
@@ -191,7 +200,10 @@ module Magick
 
       # Read the ivars directly: calling the DSL methods here would re-run
       # them with their defaults and stomp explicit `enabled: false` settings.
-      Magick.audit_log = @audit_log if @audit_log
+      # Assign even when nil: `audit_log enabled: false` has to clear the
+      # default instance Magick.configure creates, or opting out would leave
+      # audit entries being written (durably, now) anyway.
+      Magick.audit_log = @audit_log if @audit_log || @audit_log_configured
       Magick.versioning = @versioning if @versioning
       Magick.versioning_enabled = @versioning_enabled unless @versioning_enabled.nil?
       Magick.warn_on_deprecated = warn_on_deprecated

@@ -824,12 +824,67 @@ Every mutation is logged under its real action name (`enable`, `disable`,
 `enable` no longer surfaces as a bare `set_value`.
 
 ```ruby
-# View audit log entries
+# View audit log entries — newest last, merged across every process
 entries = Magick.audit_log.entries(feature_name: :my_feature, limit: 100)
 entries.each do |entry|
-  puts "#{entry.timestamp}: #{entry.action} by #{entry.user_id}"
+  puts "#{entry.id} #{entry.timestamp}: #{entry.action} by #{entry.user_id}"
 end
 ```
+
+**Durability and retention.** Entries are written to every configured adapter
+that outlives the process — Redis and/or ActiveRecord — so history survives a
+restart and every container can answer "who changed this flag" about a change
+made anywhere else. `entries` merges that shared history with the entries this
+process wrote itself.
+
+Retention is tiered, like versioning:
+
+| Tier | Where | Kept | Survives restart |
+| --- | --- | --- | --- |
+| Ring | This process's memory | last `max_entries` (default 10,000) across all features | no |
+| Durable store | Redis and/or ActiveRecord | last `retention` (default 200) **per feature** | yes |
+
+The durable store lives under a reserved `__magick_audit:<feature>` pseudo-feature
+namespace, so audit history never shows up in the feature list, is not dragged
+along by feature reads, and outlives the feature it describes — a deleted flag
+keeps the record of who deleted it. Entries carry a unique, chronologically
+sortable `id`, which is what de-duplicates them when the same entry is read back
+from more than one adapter.
+
+Writes are best-effort and happen outside the lock that guards the ring: a slow
+or unavailable backend never fails a feature mutation and never serializes
+mutations behind the audit log.
+
+Unlike version numbers, an audit append is a read-merge-write of the feature's
+capped list rather than an atomic allocation, so two containers writing for the
+same feature in the same instant can drop one entry from the shared list. Each
+write merges this process's recent entries back in, so a dropped entry is
+restored by that process's next write; entry ids make the merge exact.
+
+**A memory-only deployment has nothing that outlives the process**, so it keeps
+only the ring — `Magick.audit_log.durable?` returns `false` there. Configure
+Redis or the ActiveRecord adapter to get durable audit history.
+
+```ruby
+Magick.configure do
+  # Defaults
+  audit_log enabled: true, retention: 200, max_entries: 10_000
+
+  # Ship entries to your own sink as well (called with each entry)
+  # audit_log adapter: MyAuditSink.new
+
+  # Your sink is the system of record: keep the ring, write nothing to
+  # Redis/ActiveRecord
+  # audit_log adapter: MyAuditSink.new, persist: false
+
+  # Opt out entirely — Magick.audit_log is nil and nothing is recorded
+  # audit_log enabled: false
+end
+```
+
+A host-supplied adapter only has to respond to `append(entry)`; it is called
+outside the ring lock, and an exception it raises is logged rather than
+propagated into the feature mutation.
 
 In the Admin UI, configure a `current_actor` hook so every change made
 through the UI is attributed:

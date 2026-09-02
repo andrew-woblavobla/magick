@@ -64,6 +64,37 @@ All notable changes to `magick-feature-flags` are documented in this file.
   number still visible, including the archive, instead of restarting at 1 over
   existing snapshots.
 
+- **Audit entries are persisted by default.** The audit log's default adapter
+  was a no-op, so entries lived only in a per-process in-memory ring and were
+  lost on restart — in a multi-container deployment each process could only see
+  the changes it had made itself, which 1.5.0's full audit coverage made much
+  more visible. Every entry is now written to the adapters that outlive the
+  process (Redis and/or ActiveRecord) under a reserved `__magick_audit:<feature>`
+  namespace, so history survives a restart and one process can read what another
+  wrote. `Magick.audit_log.entries` merges the shared history with this
+  process's ring. A memory-only deployment still keeps the ring only —
+  `Magick.audit_log.durable?` reports which one you have.
+
+- **Audit retention is tiered and documented.** The process-local ring keeps
+  `max_entries` (default 10,000) entries across all features; the durable store
+  keeps `retention` (default 200) entries **per feature**. Both are
+  configurable: `audit_log retention: 500, max_entries: 20_000`.
+
+- **The audit adapter write left the ring lock.** Both the durable write and a
+  host-supplied adapter's `append` now run outside the mutex that guards the
+  in-memory ring, so a database-backed sink no longer serializes every feature
+  mutation in the process behind a single lock. An exception raised by a host
+  adapter is logged instead of aborting the mutation.
+
+- **`audit_log enabled: false` now actually opts out.** It previously left in
+  place the default audit log that `Magick.configure` creates, so entries were
+  recorded anyway; `Magick.audit_log` is now `nil` as documented.
+
+- **Bookkeeping namespaces stay out of the feature cache.** Version snapshots
+  and audit history are no longer preloaded into the memory cache or returned
+  by the Admin UI's bulk refresh, alongside the existing filtering in
+  `all_features`.
+
 ### Changes
 
 - **A non-callable `require_role` is rejected instead of ignored.**
@@ -84,6 +115,14 @@ All notable changes to `magick-feature-flags` are documented in this file.
   process can reach. Version bookkeeping treats both as best-effort, so an
   adapter that implements neither still records versions — with per-process
   numbering and an unpruned hot window, as before.
+
+- **`Magick::AuditLog::Entry#id`** — every audit entry carries a unique,
+  chronologically sortable id (also present in `to_h`), which is what
+  de-duplicates entries read back from more than one adapter.
+
+- **`audit_log persist: false`** keeps the in-memory ring and any host-supplied
+  adapter but writes nothing to Redis/ActiveRecord, for hosts whose own sink is
+  the system of record.
 
 ### Development
 
