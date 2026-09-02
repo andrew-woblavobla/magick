@@ -13,7 +13,21 @@ Gem::Specification.new do |spec|
   spec.homepage      = 'https://github.com/andrew-woblavobla/magick'
   spec.license       = 'MIT'
 
-  spec.files         = Dir['lib/**/*', 'app/**/*', 'config/**/*', 'README.md', 'LICENSE']
+  spec.metadata = {
+    'source_code_uri' => spec.homepage,
+    'changelog_uri' => "#{spec.homepage}/blob/main/CHANGELOG.md",
+    'bug_tracker_uri' => "#{spec.homepage}/issues",
+    'rubygems_mfa_required' => 'true'
+  }
+
+  spec.files = Dir[
+    'lib/**/*',
+    'app/**/*',
+    'config/**/*',
+    'README.md',
+    'CHANGELOG.md',
+    'LICENSE'
+  ].select { |path| File.file?(path) }
   spec.require_paths = ['lib']
 
   spec.required_ruby_version = '>= 3.2.0'
