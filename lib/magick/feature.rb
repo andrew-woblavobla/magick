@@ -760,10 +760,9 @@ module Magick
         'description' => description,
         'targeting' => TargetingPayload.serialize(targeting),
         'dependencies' => (@dependencies || []).map(&:to_s),
-        # Variants live inside @targeting under the internal :variants key
-        # (variants_for_export reads a never-assigned ivar and is always
-        # empty), so the wire payload reads the authoritative source.
-        'variants' => TargetingPayload.deep_stringify(targeting[:variants] || [])
+        # Variants live inside @targeting under the internal :variants key;
+        # both the wire payload and the export read them from there.
+        'variants' => TargetingPayload.deep_stringify(variants_for_export)
       }
     end
 
@@ -801,17 +800,36 @@ module Magick
       true
     end
 
+    # The canonical list of this feature's variants, as plain hashes.
+    # Variants are stored inside @targeting under the internal :variants
+    # key (see #set_variants), so that is the only place to read them from.
+    # Tolerates the string keys an adapter round-trip can hand back.
     def variants_for_export
-      return [] unless defined?(Magick::FeatureVariant)
+      Array(targeting[:variants]).filter_map do |variant|
+        next variant.to_h if variant.is_a?(FeatureVariant)
+        next unless variant.is_a?(Hash)
 
-      raw = @variants || []
-      raw.map do |v|
-        if v.is_a?(Magick::FeatureVariant)
-          { name: v.name, weight: v.weight, value: v.value }
-        else
-          v
+        v = variant.transform_keys(&:to_sym)
+        { name: v[:name], value: v[:value], weight: v[:weight] }
+      end
+    end
+
+    # Drops all variants. Absent variants and an empty variants list are
+    # different states: an empty list would leave a targeting hash that is
+    # no longer empty and so evaluates as "targeted, matched nothing".
+    def clear_variants
+      return true if targeting[:variants].nil?
+
+      record_change('clear_variants', { variants: [] }) do
+        disable_targeting(:variants)
+
+        # Rails 8+ event
+        if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
+          Magick::Rails::Events.variant_set(name, variants: [])
         end
       end
+
+      true
     end
 
     def save_targeting

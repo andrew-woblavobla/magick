@@ -58,10 +58,13 @@ module Magick
         name = fetch(feature_data, :name)
         next unless name
 
+        targeting = fetch(feature_data, :targeting)
+        targeting = {} unless targeting.is_a?(Hash)
+
         feature = build_feature(name, feature_data, adapter_registry)
         apply_value(feature, feature_data)
-        apply_targeting(feature, fetch(feature_data, :targeting) || {})
-        apply_variants(feature, fetch(feature_data, :variants) || [])
+        apply_targeting(feature, targeting)
+        apply_variants(feature, feature_data, targeting)
         apply_dependencies(feature, fetch(feature_data, :dependencies) || [])
 
         features[name.to_s] = feature
@@ -106,9 +109,9 @@ module Magick
     def self.apply_targeting(feature, targeting)
       return unless targeting.is_a?(Hash)
 
-      # Exports from gem versions where variants leaked into the targeting
-      # hash must stay importable; variants are applied separately from the
-      # top-level key.
+      # Variants live under the internal :variants key of the targeting hash
+      # but are not part of the targeting wire payload, so they are stripped
+      # here and applied separately by apply_variants.
       payload = targeting.reject { |key, _| key.to_s == 'variants' }
       return if payload.empty?
 
@@ -117,15 +120,25 @@ module Magick
       raise ImportError, "Magick.import: invalid targeting for '#{feature.name}': #{e.message}"
     end
 
-    def self.apply_variants(feature, variants)
-      return unless feature.respond_to?(:add_variant)
+    # Variants are read from the top-level key, falling back to the
+    # targeting hash for exports written by gem versions whose top-level
+    # list was always empty. The payload is the imported feature's whole
+    # state, so one without variants must not inherit the variants a
+    # same-named feature already has in the target store.
+    def self.apply_variants(feature, feature_data, targeting)
+      source = Array(fetch(feature_data, :variants))
+      source = Array(fetch(targeting, :variants)) if source.empty?
 
-      Array(variants).each do |v|
-        h = v.is_a?(Hash) ? v.transform_keys(&:to_sym) : {}
-        next unless h[:name]
+      list = source.filter_map do |variant|
+        next unless variant.is_a?(Hash)
 
-        feature.add_variant(h[:name], weight: h[:weight], value: h[:value])
+        v = variant.transform_keys(&:to_sym)
+        next unless v[:name]
+
+        { name: v[:name], value: v[:value], weight: v[:weight] }
       end
+
+      list.empty? ? feature.clear_variants : feature.set_variants(list)
     end
 
     def self.apply_dependencies(feature, deps)

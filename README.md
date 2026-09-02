@@ -671,6 +671,12 @@ File.write('features.json', json_data)
 Magick.import(File.read('features.json'))
 ```
 
+The payload carries a feature's whole state — value, status, targeting,
+exclusions, A/B variants and dependencies — so an import reproduces the
+feature the export was taken from, variant assignment included. Because it is
+the whole state, importing a feature whose payload carries no variants also
+clears any the target store had for that name.
+
 #### Versioning and Rollback
 
 Every state-changing operation (value, status, group, targeting, exclusions,

@@ -72,6 +72,114 @@ RSpec.describe Magick::ExportImport, 'round-trip' do
     end
   end
 
+  describe 'a feature carrying variants, custom attributes, complex conditions and exclusions' do
+    let(:rules) do
+      {
+        user: %w[1 2 3],
+        group: %w[beta],
+        excluded_users: %w[3],
+        excluded_roles: %w[contractor],
+        custom_attributes: { plan: { values: %w[pro enterprise], operator: :in } },
+        complex_conditions: {
+          operator: :or,
+          conditions: [
+            { type: :user, params: { user_ids: %w[1 2] } },
+            { type: :group, params: { groups: %w[beta] } }
+          ]
+        }
+      }
+    end
+
+    let(:variants) do
+      [
+        { name: 'control', value: '#0066cc', weight: 50.0 },
+        { name: 'variant_a', value: '#00cc66', weight: 30.0 },
+        { name: 'variant_b', value: '#cc0000', weight: 20.0 }
+      ]
+    end
+
+    # Contexts chosen so the feature is enabled for some and disabled for
+    # others through every rule kind above, in order: user rule + custom
+    # attribute + complex user; custom attribute rejects; excluded user;
+    # group rule + complex group; complex conditions reject; excluded role;
+    # no context at all.
+    let(:contexts) do
+      [
+        { user_id: 1, plan: 'pro' },
+        { user_id: 2, plan: 'free' },
+        { user_id: 3, plan: 'pro' },
+        { user_id: 6, group: 'beta', plan: 'enterprise' },
+        { user_id: 6, group: 'gamma', plan: 'pro' },
+        { user_id: 7, group: 'beta', plan: 'pro', role: 'contractor' },
+        {}
+      ]
+    end
+
+    def configure(feature)
+      feature.replace_targeting(rules)
+      feature.set_variants(variants)
+      feature
+    end
+
+    def assignment(feature)
+      (1..40).to_h { |i| [i, [feature.get_variant(user_id: i), feature.get_variant_value(user_id: i)]] }
+    end
+
+    it 'exports the variants the feature actually carries' do
+      Magick.register_feature(:checkout)
+      configure(Magick[:checkout])
+
+      exported = Magick::ExportImport.export(Magick.features).first
+      expect(exported[:variants]).to eq(variants)
+    end
+
+    it 'survives a full round trip with variant assignment unchanged' do
+      Magick.register_feature(:checkout)
+      before = configure(Magick[:checkout])
+      before_assignment = assignment(before)
+      before_targeting = before.targeting
+      before_enabled = contexts.map { |context| before.enabled?(context) }
+
+      exported = Magick::ExportImport.export_json(Magick.features)
+      Magick.reset!
+      after = Magick::ExportImport.import(exported, registry)['checkout']
+
+      # Sanity: the contexts exercise both outcomes, so the comparison below
+      # cannot pass by everything being uniformly disabled.
+      expect(before_enabled.uniq).to contain_exactly(true, false)
+      expect(contexts.map { |context| after.enabled?(context) }).to eq(before_enabled)
+      expect(assignment(after)).to eq(before_assignment)
+      expect(after.targeting).to eq(before_targeting)
+    end
+
+    it 'restores variants from the targeting hash of an older export' do
+      # Exports written before the top-level list was populated carried the
+      # real variants only inside targeting.
+      legacy = [{ 'name' => 'checkout', 'default_value' => false, 'variants' => [],
+                  'targeting' => { 'user' => %w[1], 'variants' => variants } }]
+
+      imported = Magick::ExportImport.import(JSON.generate(legacy), registry)['checkout']
+      assigned = imported.get_variant(user_id: 1)
+
+      expect(imported.variants_for_export).to eq(variants)
+      expect(variants.map { |v| v[:name] }).to include(assigned)
+      expect(imported.get_variant_value(user_id: 1)).to eq(variants.find { |v| v[:name] == assigned }[:value])
+    end
+
+    it 'does not inherit variants a same-named feature already has in the target store' do
+      Magick.register_feature(:checkout)
+      configure(Magick[:checkout])
+
+      # Same registry, so the store still holds the variants set above.
+      payload = [{ name: 'checkout', default_value: false, targeting: { user: %w[1] } }]
+      imported = Magick::ExportImport.import(payload, Magick.default_adapter_registry)['checkout']
+
+      expect(imported.variants_for_export).to be_empty
+      expect(imported.get_variant(user_id: 1)).to be_nil
+      expect(imported.enabled?(user_id: 1)).to be true
+    end
+  end
+
   it 'preserves feature dependencies' do
     Magick.register_feature(:parent)
     Magick.register_feature(:child)

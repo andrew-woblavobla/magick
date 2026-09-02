@@ -20,6 +20,13 @@ applies the same pass on write, so a flag evaluates identically in the
 process that wrote it and in every process that only read it. Readers must
 not handle both key spellings — that is what hid the round-trip bug.
 
+**Variants** — the weighted arms of an A/B test (`Feature#set_variants`,
+`Magick.variant`). Stored inside the internal targeting hash under the
+`:variants` key — the single source of truth, read back through
+`Feature#variants_for_export`. Excluded from the wire targeting payload and
+carried at the top level of `Feature#as_json` and of the export payload
+instead. Avoid: "targeting variants".
+
 **Wire targeting payload** — the JSON representation of targeting exchanged
 with control planes: string keys, list rules as arrays of strings,
 percentages as floats. The `targeting` key is **always present**; `{}` is
