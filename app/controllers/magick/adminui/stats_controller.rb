@@ -8,6 +8,11 @@ module Magick
 
       include Magick::AdminUI::Engine.routes.url_helpers
       layout 'application'
+      # Installs the shared `authenticate_admin!` filter. The stats route is
+      # gated by the same `require_role` hook as the feature routes: it not
+      # only exposes usage data but distinguishes known from unknown feature
+      # names, so leaving it open handed out flag names to anyone asking.
+      include Magick::AdminUI::Authentication
 
       helper_method :magick_admin_ui
 

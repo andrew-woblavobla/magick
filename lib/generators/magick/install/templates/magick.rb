@@ -39,7 +39,17 @@ end
 # The Admin UI is CSRF-protected and 404s on unknown feature IDs, BUT
 # authentication is opt-in — if you mount the engine without configuring
 # `require_role`, the UI will be reachable by anyone who can hit its routes.
-# Always wire it to your host app's auth layer:
+# Always wire it to your host app's auth layer. Gating at the router is the
+# more robust option, since it covers every route the engine mounts:
+#
+# # config/routes.rb
+# authenticate :admin_user do
+#   mount Magick::AdminUI::Engine, at: '/magick'
+# end
+#
+# The built-in hook is the alternative. It gates every Admin UI route, and it
+# must be a callable or nil — assigning a bare role name raises
+# Magick::ConfigurationError rather than leaving the panel silently open.
 #
 # Magick::AdminUI.configure do |c|
 #   c.require_role = ->(controller) { controller.current_user&.admin? }

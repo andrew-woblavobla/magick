@@ -1,177 +1,113 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
+require_relative '../rails_helper'
 
-# Skip entire spec if Rails is not available
-if defined?(Rails)
-  require_relative '../../lib/magick/admin_ui'
-
+# The Admin UI's controllers, views and authentication are exercised over real
+# requests against a mounted engine in spec/magick/admin_ui/. What is left here
+# is the engine's public surface and its configuration object.
+if MagickRailsApp.available?
   RSpec.describe Magick::AdminUI do
-    # TODO: Implement admin UI for managing features
-    # Requirements:
-    # - Admin panel for managing features
-    # - Must be easily integrated into Rails app
-    # - Should provide web interface for CRUD operations
-    # - Should show feature statistics and targeting
-
-  describe 'mounting in Rails' do
-    it 'can be mounted as Rails engine' do
-      expect(described_class::Engine).to be < Rails::Engine
+    around do |example|
+      config = described_class.config
+      previous = {
+        theme: config.theme,
+        brand_name: config.brand_name,
+        require_role: config.require_role,
+        available_roles: config.available_roles,
+        available_tags: config.available_tags
+      }
+      example.run
+    ensure
+      config.theme = previous[:theme]
+      config.brand_name = previous[:brand_name]
+      config.instance_variable_set(:@require_role, previous[:require_role])
+      config.available_roles = previous[:available_roles]
+      config.available_tags = previous[:available_tags]
     end
 
-    it 'provides mountable routes' do
-      routes = described_class::Engine.routes
-      expect(routes.url_helpers).to respond_to(:magick_features_path)
+    describe 'mounting in Rails' do
+      it 'can be mounted as Rails engine' do
+        expect(described_class::Engine).to be < Rails::Engine
+      end
+
+      it 'provides mountable routes' do
+        expect(described_class::Engine.routes.url_helpers).to respond_to(:features_path)
+      end
+    end
+
+    describe 'configuration' do
+      it 'allows customizing UI appearance' do
+        described_class.configure do |config|
+          config.theme = :dark
+          config.brand_name = 'My App'
+        end
+
+        expect(described_class.config.theme).to eq(:dark)
+        expect(described_class.config.brand_name).to eq('My App')
+      end
+
+      # Enforcement of the configured hook lives in
+      # spec/magick/admin_ui/authentication_request_spec.rb — asserting that a
+      # value round-trips proves nothing about whether the panel is gated.
+      it 'accepts a callable authentication hook' do
+        hook = ->(controller) { controller.respond_to?(:params) }
+        described_class.configure { |config| config.require_role = hook }
+
+        expect(described_class.config.require_role).to be(hook)
+      end
+
+      it 'refuses a role name that cannot authenticate anything' do
+        expect { described_class.configure { |config| config.require_role = :admin } }
+          .to raise_error(Magick::ConfigurationError, /must be callable/)
+      end
+
+      it 'allows configuring available tags as array' do
+        described_class.configure do |config|
+          config.available_tags = %w[premium beta vip]
+        end
+
+        expect(described_class.config.tags).to eq(%w[premium beta vip])
+      end
+
+      it 'allows configuring available tags as lambda' do
+        tag_lambda = -> { [double(id: 1, name: 'premium'), double(id: 2, name: 'beta')] }
+        described_class.configure do |config|
+          config.available_tags = tag_lambda
+        end
+
+        tags = described_class.config.tags
+        expect(tags.length).to eq(2)
+        expect(tags.first.id).to eq(1)
+        expect(tags.first.name).to eq('premium')
+      end
+
+      it 'returns empty array when tags are nil' do
+        described_class.configure do |config|
+          config.available_tags = nil
+        end
+
+        expect(described_class.config.tags).to eq([])
+      end
+
+      it 'calls lambda each time tags are accessed' do
+        call_count = 0
+        tag_lambda = lambda {
+          call_count += 1
+          %w[tag1 tag2]
+        }
+        described_class.configure do |config|
+          config.available_tags = tag_lambda
+        end
+
+        expect(call_count).to eq(0)
+        described_class.config.tags
+        expect(call_count).to eq(1)
+        described_class.config.tags
+        expect(call_count).to eq(2)
+      end
     end
   end
-
-  describe 'views' do
-    it 'provides index view for listing features' do
-      Magick.register_feature(:test_feature, type: :boolean, default_value: false)
-      view = described_class::FeaturesController.new.index
-      expect(view).to be_present
-    end
-
-    it 'provides show view for feature details' do
-      Magick.register_feature(:test_feature, type: :boolean, default_value: false)
-      view = described_class::FeaturesController.new.show
-      expect(view).to be_present
-    end
-
-    it 'provides edit view for modifying features' do
-      Magick.register_feature(:test_feature, type: :boolean, default_value: false)
-      view = described_class::FeaturesController.new.edit
-      expect(view).to be_present
-    end
-  end
-
-  describe 'controllers' do
-    describe 'FeaturesController' do
-      it 'lists all features' do
-        Magick.register_feature(:feature1, type: :boolean, default_value: false)
-        Magick.register_feature(:feature2, type: :boolean, default_value: false)
-        controller = described_class::FeaturesController.new
-        result = controller.index
-        expect(result[:features].length).to eq(2)
-      end
-
-      it 'shows feature details' do
-        Magick.register_feature(:test_feature, type: :boolean, default_value: false, description: 'Test')
-        controller = described_class::FeaturesController.new
-        result = controller.show
-        expect(result[:feature].name).to eq('test_feature')
-      end
-
-      it 'updates feature value' do
-        Magick.register_feature(:test_feature, type: :boolean, default_value: false)
-        controller = described_class::FeaturesController.new
-        controller.update(value: true)
-        expect(Magick[:test_feature].value).to be true
-      end
-
-      it 'enables feature for user' do
-        Magick.register_feature(:test_feature, type: :boolean, default_value: false)
-        controller = described_class::FeaturesController.new
-        controller.enable_for_user(user_id: 123)
-        expect(Magick.enabled?(:test_feature, user_id: 123)).to be true
-      end
-    end
-
-    describe 'StatsController' do
-      it 'shows feature statistics' do
-        Magick.register_feature(:test_feature, type: :boolean, default_value: false)
-        Magick.enabled?(:test_feature) # Trigger usage
-        controller = described_class::StatsController.new
-        result = controller.show
-        expect(result[:stats]).to have_key(:usage_count)
-      end
-    end
-  end
-
-  describe 'helpers' do
-    it 'provides helper methods for views' do
-      expect(described_class::Helpers).to respond_to(:feature_status_badge)
-      expect(described_class::Helpers).to respond_to(:feature_type_label)
-    end
-
-    it 'formats feature status for display' do
-      status = described_class::Helpers.feature_status_badge(:active)
-      expect(status).to include('active')
-    end
-
-    it 'formats feature type for display' do
-      type = described_class::Helpers.feature_type_label(:boolean)
-      expect(type).to include('Boolean')
-    end
-  end
-
-  describe 'assets' do
-    it 'includes CSS stylesheets' do
-      expect(described_class::Engine.assets).to include('magick/admin.css')
-    end
-
-    it 'includes JavaScript files' do
-      expect(described_class::Engine.assets).to include('magick/admin.js')
-    end
-  end
-
-  describe 'configuration' do
-    it 'allows customizing UI appearance' do
-      described_class.configure do |config|
-        config.theme = :dark
-        config.brand_name = 'My App'
-      end
-      expect(described_class.config.theme).to eq(:dark)
-      expect(described_class.config.brand_name).to eq('My App')
-    end
-
-    it 'allows restricting access by role' do
-      described_class.configure do |config|
-        config.require_role = :admin
-      end
-      expect(described_class.config.require_role).to eq(:admin)
-    end
-
-    it 'allows configuring available tags as array' do
-      described_class.configure do |config|
-        config.available_tags = ['premium', 'beta', 'vip']
-      end
-      expect(described_class.config.tags).to eq(['premium', 'beta', 'vip'])
-    end
-
-    it 'allows configuring available tags as lambda' do
-      tag_lambda = -> { [double(id: 1, name: 'premium'), double(id: 2, name: 'beta')] }
-      described_class.configure do |config|
-        config.available_tags = tag_lambda
-      end
-      tags = described_class.config.tags
-      expect(tags.length).to eq(2)
-      expect(tags.first.id).to eq(1)
-      expect(tags.first.name).to eq('premium')
-    end
-
-    it 'returns empty array when tags are nil' do
-      described_class.configure do |config|
-        config.available_tags = nil
-      end
-      expect(described_class.config.tags).to eq([])
-    end
-
-    it 'calls lambda each time tags are accessed' do
-      call_count = 0
-      tag_lambda = -> { call_count += 1; ['tag1', 'tag2'] }
-      described_class.configure do |config|
-        config.available_tags = tag_lambda
-      end
-
-      expect(call_count).to eq(0)
-      described_class.config.tags
-      expect(call_count).to eq(1)
-      described_class.config.tags
-      expect(call_count).to eq(2)
-    end
-  end
-end
 else
   RSpec.describe 'Magick::AdminUI' do
     it 'requires Rails to be available' do

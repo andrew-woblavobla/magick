@@ -13,7 +13,10 @@ module Magick
       # Include route helpers so views can use magick_admin_ui.* helpers
       include Magick::AdminUI::Engine.routes.url_helpers
       layout 'application'
-      before_action :authenticate_admin!
+      # Installs the shared `authenticate_admin!` filter. Included (rather
+      # than declared here) so every Admin UI controller is gated by the same
+      # `require_role` hook — see Magick::AdminUI::Authentication.
+      include Magick::AdminUI::Authentication
       before_action :set_feature, only: %i[show edit update enable disable enable_for_user enable_for_role disable_for_role update_targeting update_variants]
       # Attribute every change made during the request to the configured
       # actor, so audit entries and version snapshots record who did it.
@@ -251,18 +254,6 @@ module Magick
         end
 
         actor ? Magick.with_actor(actor, &block) : yield
-      end
-
-      def authenticate_admin!
-        return unless Magick::AdminUI.config.require_role
-
-        auth_callback = Magick::AdminUI.config.require_role
-        if auth_callback.respond_to?(:call)
-          unless auth_callback.call(self)
-            head :forbidden
-            nil
-          end
-        end
       end
 
       # A hash-like payload is either a raw Hash or an

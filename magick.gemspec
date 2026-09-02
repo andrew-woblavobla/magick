@@ -31,4 +31,9 @@ Gem::Specification.new do |spec|
   spec.add_development_dependency 'request_store', '~> 1.5'
   # Optional dependency for Redis adapter / Pub/Sub integration testing
   spec.add_development_dependency 'redis', '~> 5.0'
+  # Optional dependencies for Admin UI request specs (a throwaway Rails app)
+  spec.add_development_dependency 'actionpack', '>= 6.0', '< 9.0'
+  spec.add_development_dependency 'actionview', '>= 6.0', '< 9.0'
+  spec.add_development_dependency 'rack-test', '~> 2.0'
+  spec.add_development_dependency 'railties', '>= 6.0', '< 9.0'
 end

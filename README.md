@@ -1053,27 +1053,10 @@ The Admin UI provides the following routes:
 
 **Security:**
 
-The Admin UI includes a built-in authentication hook via `require_role`. Configure it to gate access:
-
-```ruby
-# config/initializers/magick.rb
-Rails.application.config.after_initialize do
-  Magick::AdminUI.configure do |config|
-    # Option 1: Lambda-based authentication (recommended)
-    config.require_role = ->(controller) {
-      # Return true to allow, false to deny (returns 403 Forbidden)
-      controller.current_user&.admin?
-    }
-
-    # Option 2: Check for a specific role
-    config.require_role = ->(controller) {
-      controller.current_user&.role == 'admin'
-    }
-  end
-end
-```
-
-You can also gate access at the routing level:
+Gating at the router is the more robust of the two options below, and the one
+to reach for in production: it covers everything the engine mounts — including
+routes added by a later version of this gem — and it stops unauthenticated
+requests before they reach the gem at all.
 
 ```ruby
 # config/routes.rb
@@ -1088,6 +1071,38 @@ Rails.application.routes.draw do
     mount Magick::AdminUI::Engine, at: '/magick'
   end
 end
+```
+
+If your auth layer does not fit a router-level block, the Admin UI also
+includes a built-in authentication hook via `require_role`. It runs on every
+route the engine exposes — feature routes and the stats route alike:
+
+```ruby
+# config/initializers/magick.rb
+Rails.application.config.after_initialize do
+  Magick::AdminUI.configure do |config|
+    # Option 1: Lambda-based authentication
+    config.require_role = ->(controller) {
+      # Return true to allow, false to deny (returns 403 Forbidden)
+      controller.current_user&.admin?
+    }
+
+    # Option 2: Check for a specific role
+    config.require_role = ->(controller) {
+      controller.current_user&.role == 'admin'
+    }
+  end
+end
+```
+
+`require_role` must be a callable (a lambda or proc taking the controller) or
+`nil`. A bare role name is **rejected** — `config.require_role = :admin` raises
+`Magick::ConfigurationError` at configuration time rather than being accepted
+and then ignored on every request:
+
+```ruby
+config.require_role = :admin    # => Magick::ConfigurationError
+config.require_role = 'admin'   # => Magick::ConfigurationError
 ```
 
 **Note:** The Admin UI is optional and only loaded when explicitly enabled in configuration. It requires Rails to be available.
@@ -1136,8 +1151,22 @@ The Admin UI is CSRF-protected out of the box (`protect_from_forgery with:
 features from user-controlled `params[:id]`.
 
 Authentication is **opt-in** — if `Magick::AdminUI.config.require_role` is
-left `nil` the UI is reachable by anyone who can hit its routes. Always set
-it behind your app's auth:
+left `nil` the UI is reachable by anyone who can hit its routes. Always put it
+behind your app's auth, preferably at the router, which gates every route the
+engine mounts, present and future:
+
+```ruby
+# config/routes.rb — the more robust option
+authenticate :admin_user do
+  mount Magick::AdminUI::Engine, at: '/magick'
+end
+```
+
+The built-in hook is the alternative when a router-level block does not fit.
+It gates every Admin UI route, and it is fail-closed: it must be a callable or
+`nil`, and a value that is neither (a role name, say) raises
+`Magick::ConfigurationError` when assigned rather than quietly leaving the
+panel open.
 
 ```ruby
 Magick::AdminUI.configure do |c|

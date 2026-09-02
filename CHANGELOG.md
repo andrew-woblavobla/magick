@@ -16,6 +16,15 @@ All notable changes to `magick-feature-flags` are documented in this file.
   `instance_eval` sink. `MAGICK_ALLOW_CONFIG_EVAL=1` still skips the check for
   a trusted file outside the tree, and is still dangerous.
 
+- **Admin UI**: `Magick::AdminUI.config.require_role` gates every Admin UI
+  route. The hook was wired into the features controller only, so a host
+  relying on it alone had its stats route (`GET /magick/stats/:id`) left open —
+  and that route distinguishes known from unknown feature names, so it doubled
+  as an enumeration oracle for flag names. Both controllers now include the
+  shared `Magick::AdminUI::Authentication` filter, and the specs assert
+  enforcement across the engine's whole route set rather than one route at a
+  time.
+
 ### Fixes
 
 - **Pub/Sub subscriber shuts down cleanly.** The subscriber thread's early-exit
@@ -24,12 +33,29 @@ All notable changes to `magick-feature-flags` are documented in this file.
   shutting down a registry with a live Redis subscription raised. The guards now
   use `next`.
 
+### Changes
+
+- **A non-callable `require_role` is rejected instead of ignored.**
+  `config.require_role = :admin` (or any other non-callable) used to pass the
+  nil guard, fail the callable check, and fall through to no authentication at
+  all, leaving the panel open while the operator believed it was locked. It now
+  raises `Magick::ConfigurationError` (new) at assignment time; a non-callable
+  hook that reaches the config another way denies the request. Leaving
+  `require_role` nil still permits access, so hosts gating at the router are
+  unaffected.
+
 ### Development
 
 - The `redis` gem is a development dependency, and CI runs a Redis service, so
   the Redis adapter, Pub/Sub cache invalidation, and circuit breaker are
   exercised on every push. Run them locally with `bundle exec rake spec:redis`;
   the default `bundle exec rspec` still needs no external services.
+
+- The Admin UI specs boot a throwaway Rails application with the engine mounted
+  (`spec/rails_helper.rb`) and drive it over rack-test, so authentication
+  is asserted on every route the engine exposes rather than on a setting that
+  merely round-trips. `actionpack`, `actionview`, `railties` and `rack-test`
+  are development dependencies; the specs skip when they are absent.
 
 ## 1.6.0 — 2026-08-05
 

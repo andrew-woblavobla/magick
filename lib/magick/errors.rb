@@ -10,4 +10,9 @@ module Magick
   # so API callers can map it straight to a 422.
   class InvalidTargetingError < Error; end
   class AdapterError < Error; end
+  # Raised when a configuration value cannot do the job it was assigned to do
+  # — e.g. a `Magick::AdminUI.config.require_role` hook that is not callable.
+  # Raised at assignment time so the misconfiguration surfaces at boot rather
+  # than being quietly ignored on every request.
+  class ConfigurationError < Error; end
 end

@@ -19,4 +19,10 @@ group :development, :test do
   gem 'request_store', '~> 1.5', require: false
   # Optional dependency for Redis adapter / Pub/Sub integration testing
   gem 'redis', '~> 5.0', require: false
+  # Boot a throwaway Rails app in specs so the mounted Admin UI engine can be
+  # exercised over real requests (see spec/rails_helper.rb).
+  gem 'actionpack', '>= 6.0', '< 9.0', require: false
+  gem 'actionview', '>= 6.0', '< 9.0', require: false
+  gem 'rack-test', '~> 2.0', require: false
+  gem 'railties', '>= 6.0', '< 9.0', require: false
 end
