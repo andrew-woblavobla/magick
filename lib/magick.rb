@@ -27,6 +27,7 @@ require_relative 'magick/targeting_payload'
 require_relative 'magick/bulk_result'
 
 require_relative 'magick/log_safe'
+require_relative 'magick/adapter_failure'
 require_relative 'magick/audit_log'
 require_relative 'magick/performance_metrics'
 require_relative 'magick/export_import'

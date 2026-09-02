@@ -116,11 +116,7 @@ module Magick
         # Update Redis if available
         if redis_adapter
           update_redis = proc do
-            circuit_breaker.call do
-              redis_adapter.set(feature_name, key, value)
-            end
-          rescue AdapterError => e
-            warn "Failed to update Redis: #{e.message}" if defined?(Rails) && Rails.env.development?
+            write_to_redis(:set, feature_name) { redis_adapter.set(feature_name, key, value) }
           end
 
           if @async && defined?(Thread)
@@ -134,11 +130,7 @@ module Magick
         # Always update Active Record if available (as fallback/persistence layer)
         return unless active_record_adapter
 
-        begin
-          active_record_adapter.set(feature_name, key, value)
-        rescue AdapterError => e
-          warn "Failed to update Active Record: #{e.message}" if defined?(Rails) && Rails.env.development?
-        end
+        write_to_active_record(:set, feature_name) { active_record_adapter.set(feature_name, key, value) }
       end
 
       def delete(feature_name)
@@ -149,18 +141,16 @@ module Magick
             redis_adapter.delete(feature_name)
             # Publish cache invalidation message
             publish_cache_invalidation(feature_name)
-          rescue AdapterError
-            # Continue even if Redis fails
+          rescue StandardError => e
+            # Deliberately not behind the circuit breaker, as before: only the
+            # silence is being fixed here, not the write semantics.
+            AdapterFailure.report(backend: :redis, operation: :delete, feature_name: feature_name, error: e)
           end
         end
 
         return unless active_record_adapter
 
-        begin
-          active_record_adapter.delete(feature_name)
-        rescue AdapterError
-          # Continue even if Active Record fails
-        end
+        write_to_active_record(:delete, feature_name) { active_record_adapter.delete(feature_name) }
       end
 
       def exists?(feature_name)
@@ -301,11 +291,7 @@ module Magick
 
         if redis_adapter
           update_redis = proc do
-            circuit_breaker.call do
-              redis_adapter.set_all_data(feature_name, data_hash)
-            end
-          rescue AdapterError => e
-            warn "Failed to bulk update Redis: #{e.message}" if defined?(Rails) && Rails.env.development?
+            write_to_redis(:set_all_data, feature_name) { redis_adapter.set_all_data(feature_name, data_hash) }
           end
 
           if @async && defined?(Thread)
@@ -316,12 +302,10 @@ module Magick
           end
         end
 
-        if active_record_adapter
-          begin
-            active_record_adapter.set_all_data(feature_name, data_hash)
-          rescue AdapterError => e
-            warn "Failed to bulk update Active Record: #{e.message}" if defined?(Rails) && Rails.env.development?
-          end
+        return unless active_record_adapter
+
+        write_to_active_record(:set_all_data, feature_name) do
+          active_record_adapter.set_all_data(feature_name, data_hash)
         end
       end
 
@@ -385,8 +369,11 @@ module Magick
           redis_client = redis_adapter.client
           redis_client&.publish(CACHE_INVALIDATION_CHANNEL, feature_name.to_s)
         rescue StandardError => e
-          # Silently fail - cache invalidation is best effort
-          warn "Failed to publish cache invalidation: #{e.message}" if defined?(Rails) && Rails.env.development?
+          # Best effort for this process, but a dropped invalidation leaves every
+          # OTHER process holding a stale value, so it is reported like any other
+          # failed write rather than swallowed.
+          AdapterFailure.report(backend: :redis, operation: :publish_cache_invalidation,
+                                feature_name: feature_name, error: e)
         end
       end
 
@@ -438,8 +425,42 @@ module Magick
         thread.join(1) # give it a moment to actually unwind
       end
 
+      # Run a Redis write through the circuit breaker. Returns true when the
+      # write landed, false when it failed or was dropped.
+      #
+      # Memory was already written and is never rolled back, so every false here
+      # means this process is serving a value the rest of the fleet does not
+      # have. That is reported before returning, never swallowed. The failure
+      # itself is contained: a broken backend must not raise into the caller.
+      def write_to_redis(operation, feature_name)
+        # An open breaker drops the write without ever calling the adapter, so
+        # the drop has to be reported on its own — otherwise a backend that
+        # stays down goes quiet after the breaker trips, which is exactly the
+        # window in which divergence accumulates.
+        if circuit_breaker.open?
+          AdapterFailure.report(backend: :redis, operation: operation, feature_name: feature_name,
+                                reason: 'circuit breaker open')
+          return false
+        end
+
+        circuit_breaker.call { yield }
+        true
+      rescue StandardError => e
+        AdapterFailure.report(backend: :redis, operation: operation, feature_name: feature_name, error: e)
+        false
+      end
+
+      # Same contract as #write_to_redis, for the ActiveRecord persistence layer.
+      def write_to_active_record(operation, feature_name)
+        yield
+        true
+      rescue StandardError => e
+        AdapterFailure.report(backend: :active_record, operation: operation, feature_name: feature_name, error: e)
+        false
+      end
+
       # Fire-and-forget async Redis write. Wrapped so that a failure in the
-      # update or publish step is logged rather than silently killing the
+      # update or publish step is reported rather than silently killing the
       # thread — Thread#abort_on_exception is false, which otherwise swallows
       # the error completely.
       def spawn_async_write(feature_name, update_redis)
@@ -447,7 +468,7 @@ module Magick
           update_redis.call
           publish_cache_invalidation(feature_name)
         rescue StandardError => e
-          warn "Magick: async Redis write failed for '#{Magick::LogSafe.sanitize(feature_name)}': #{e.class}: #{Magick::LogSafe.sanitize(e.message)}"
+          AdapterFailure.report(backend: :redis, operation: :async_write, feature_name: feature_name, error: e)
         end
         thread.name = "magick-async-write-#{feature_name}" if thread.respond_to?(:name=)
         thread.abort_on_exception = false

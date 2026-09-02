@@ -95,6 +95,36 @@ All notable changes to `magick-feature-flags` are documented in this file.
   by the Admin UI's bulk refresh, alongside the existing filtering in
   `all_features`.
 
+- **Adapter write failures are visible in production.** A failed Redis or
+  ActiveRecord write in the registry used to be reported with a bare `warn`
+  gated on `Rails.env.development?` — production got no log line and no event,
+  even though the memory cache had already been written and is never rolled
+  back, leaving that process serving a value no other process had. Every failed
+  or dropped write in `set`, `set_all_data`, `delete`, the async write path and
+  the cache-invalidation publish now logs at **error severity in every
+  environment** (through `Rails.logger` when present, `$stderr` otherwise,
+  sanitized via `Magick::LogSafe`) and emits a
+  `magick.feature_flag.adapter_write_failed` event so hosts can alert on the
+  divergence. Reporting never raises and never turns a partial write into an
+  exception for the caller. New `Magick::AdapterFailure` module.
+
+- **Writes dropped by an open circuit breaker are reported too.** Once the
+  breaker tripped, Redis writes were skipped with no signal at all — silence
+  during exactly the window in which divergence accumulates. Each dropped write
+  now reports with `reason: "circuit breaker open"`.
+
+- **Registry write paths contain any backend error, not just `AdapterError`.**
+  A driver exception that escaped an adapter's own wrapping (`IOError`,
+  `Redis::CannotConnectError`, …) used to propagate out of `Registry#set` /
+  `#set_all_data` to the caller.
+
+- **Rails 8.1 structured events are actually emitted.** `Magick::Rails::Events`
+  is nested inside `Magick::Rails`, so its bare `Rails` constant resolved
+  lexically to that enclosing module rather than to the framework. `rails81?`
+  was therefore always false and *every* event in the gem was silently a no-op
+  inside a real Rails app. Now spelled `::Rails`. Hosts that subscribed to
+  `magick.feature_flag.*` and saw nothing will start receiving events.
+
 ### Changes
 
 - **A non-callable `require_role` is rejected instead of ignored.**

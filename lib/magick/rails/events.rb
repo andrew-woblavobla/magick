@@ -3,9 +3,14 @@
 module Magick
   module Rails
     module Events
-      # Check if Rails 8.1+ structured events are available
+      # Check if Rails 8.1+ structured events are available.
+      #
+      # `::Rails` is spelled out on purpose: this module is nested inside
+      # `Magick::Rails`, so a bare `Rails` resolves lexically to the enclosing
+      # `Magick::Rails` module and never to the framework — which silently made
+      # every event in this file a no-op inside a real Rails app.
       def self.rails81?
-        defined?(Rails) && Rails.respond_to?(:event) && Rails.event.respond_to?(:notify)
+        defined?(::Rails) && ::Rails.respond_to?(:event) && ::Rails.event.respond_to?(:notify)
       end
 
       # Event names (using Rails 8.1 structured event format)
@@ -29,14 +34,15 @@ module Magick
         imported: "#{EVENT_PREFIX}.imported",
         audit_logged: "#{EVENT_PREFIX}.audit_logged",
         usage_tracked: "#{EVENT_PREFIX}.usage_tracked",
-        deprecated_warning: "#{EVENT_PREFIX}.deprecated_warning"
+        deprecated_warning: "#{EVENT_PREFIX}.deprecated_warning",
+        adapter_write_failed: "#{EVENT_PREFIX}.adapter_write_failed"
       }.freeze
 
       def self.notify(event_name, payload = {})
         return unless rails81?
 
         event_name_str = EVENTS[event_name] || event_name.to_s
-        Rails.event.notify(event_name_str, payload)
+        ::Rails.event.notify(event_name_str, payload)
       end
 
       # Backward compatibility alias
@@ -218,6 +224,24 @@ module Magick
                  operation: operation.to_s,
                  duration: duration,
                  success: success,
+                 timestamp: Time.now.iso8601,
+                 **metadata
+               })
+      end
+
+      # A write to a shared backend (Redis / ActiveRecord) failed or was
+      # dropped. Memory has already been updated and is never rolled back, so
+      # this process is now serving a value the rest of the fleet does not
+      # have. Subscribe to alert on backend divergence.
+      def self.adapter_write_failed(feature_name, backend:, operation:, error_class: nil, error_message: nil,
+                                    reason: nil, **metadata)
+        notify(:adapter_write_failed, {
+                 feature_name: feature_name.to_s,
+                 backend: backend.to_s,
+                 operation: operation.to_s,
+                 error_class: error_class,
+                 error_message: error_message,
+                 reason: reason,
                  timestamp: Time.now.iso8601,
                  **metadata
                })

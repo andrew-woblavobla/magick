@@ -24,6 +24,7 @@ All events are prefixed with `magick.feature_flag.`:
 - `magick.feature_flag.audit_logged` - Audit log entry created
 - `magick.feature_flag.usage_tracked` - Feature usage tracked
 - `magick.feature_flag.deprecated_warning` - Deprecated feature used
+- `magick.feature_flag.adapter_write_failed` - A write to Redis or ActiveRecord failed or was dropped
 
 ## Usage
 
@@ -215,6 +216,25 @@ flips the feature's value for every user.
 }
 ```
 
+### adapter_write_failed
+```ruby
+{
+  feature_name: "new_checkout",
+  backend: "redis",                  # "redis" or "active_record"
+  operation: "set",                  # set, set_all_data, delete, publish_cache_invalidation, async_write
+  error_class: "Magick::AdapterError",
+  error_message: "Failed to set in Redis: Connection refused",
+  reason: nil,                       # set instead of error_* when the write was dropped
+                                     # without being attempted (e.g. "circuit breaker open")
+  timestamp: "2024-01-01T12:00:00Z"
+}
+```
+
+The memory cache is written first and is never rolled back, so this event means
+the emitting process is now serving a value the rest of the fleet does not have.
+It is worth alerting on. The same failure is also logged at `error` severity,
+in every environment.
+
 ## Integration Examples
 
 ### Send to Monitoring Service
@@ -248,6 +268,22 @@ class AnalyticsSubscriber
 end
 
 Rails.event.subscribe('magick.feature_flag.usage_tracked', AnalyticsSubscriber.new)
+```
+
+### Alert on Backend Divergence
+```ruby
+class AdapterFailureSubscriber
+  def emit(event)
+    payload = event[:payload]
+    StatsD.increment('magick.adapter_write_failed', tags: ["backend:#{payload[:backend]}"])
+    Sentry.capture_message(
+      "Magick #{payload[:backend]} #{payload[:operation]} failed for #{payload[:feature_name]}",
+      level: :error
+    )
+  end
+end
+
+Rails.event.subscribe('magick.feature_flag.adapter_write_failed', AdapterFailureSubscriber.new)
 ```
 
 ### Alert on Deprecated Features

@@ -994,6 +994,27 @@ When a feature is requested:
 
 This ensures maximum performance while maintaining persistence and reliability.
 
+#### When a Backend Write Fails
+
+Writes go to memory first and memory is never rolled back, so a Redis or
+ActiveRecord write that fails leaves that one process serving a value the rest
+of the fleet does not have. The write itself stays contained — a broken backend
+never raises into your code — but the divergence is always reported:
+
+- **Logged at `error` severity in every environment** (not just development),
+  through `Rails.logger` when there is one and `$stderr` otherwise. Feature
+  names and driver messages are sanitized with `Magick::LogSafe`, so nothing
+  coming off the wire can forge a log line.
+- **Emitted as `magick.feature_flag.adapter_write_failed`** on the structured
+  event channel, with `backend`, `operation`, `feature_name` and the error (or
+  `reason: "circuit breaker open"` when the write was dropped without being
+  attempted). Subscribe to it to alert on divergence — see
+  [RAILS8_EVENTS.md](RAILS8_EVENTS.md).
+
+```
+Magick: redis set failed for 'new_checkout': Magick::AdapterError: Failed to set in Redis: Connection refused
+```
+
 ### Admin UI
 
 Magick includes a web-based Admin UI for managing feature flags. It's a Rails Engine that provides a user-friendly interface for viewing, enabling, disabling, and configuring features.
