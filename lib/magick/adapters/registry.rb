@@ -1,11 +1,16 @@
 # frozen_string_literal: true
 
+require 'json'
+require 'securerandom'
+
 module Magick
   module Adapters
     class Registry
       CACHE_INVALIDATION_CHANNEL = 'magick:cache:invalidate'
 
-      LOCAL_WRITE_TTL = 2.0 # seconds to ignore self-invalidation after a local write
+      # An invalidation message is a small JSON object; anything larger than this
+      # did not come from us and is not worth parsing.
+      MAX_INVALIDATION_PAYLOAD_BYTES = 512
 
       # Accept only conservative feature identifiers coming off the wire.
       # Anything outside this alphabet (newlines, spaces, Unicode punctuation,
@@ -24,11 +29,12 @@ module Magick
         @subscriber_thread = nil
         @subscriber = nil
         @refresh_thread = nil
-        @local_writes = {} # Track recent local writes to skip self-invalidation
-        @reload_mutex = Mutex.new
         @stopping = false
         @shutdown_mutex = Mutex.new
         @owner_pid = Process.pid
+        @identity_mutex = Mutex.new
+        @publisher_id_pid = Process.pid
+        @publisher_id = generate_publisher_id
         # Only start Pub/Sub subscriber if Redis is available
         # In memory-only mode, each process has isolated cache (no cross-process invalidation)
         start_cache_invalidation_subscriber if redis_adapter
@@ -109,9 +115,6 @@ module Magick
       def set(feature_name, key, value)
         # Update memory first (always synchronous)
         memory_adapter&.set(feature_name, key, value)
-
-        # Record local write so the subscriber skips self-invalidation
-        record_local_write(feature_name)
 
         # Update Redis if available
         if redis_adapter
@@ -291,9 +294,6 @@ module Magick
       def set_all_data(feature_name, data_hash)
         memory_adapter&.set_all_data(feature_name, data_hash)
 
-        # Record local write so the subscriber skips self-invalidation
-        record_local_write(feature_name)
-
         if redis_adapter
           update_redis = proc do
             write_to_redis(:set_all_data, feature_name) { redis_adapter.set_all_data(feature_name, data_hash) }
@@ -315,12 +315,15 @@ module Magick
       end
 
       # Remove one key from a feature across every configured layer.
+      #
+      # No local-write bookkeeping is needed: self-invalidation is keyed on the
+      # publisher of each message, so this process's own echo is recognised by
+      # identity — and #delete_key does not publish at all.
       def delete_key(feature_name, key)
         deleted = false
         [memory_adapter, redis_adapter, active_record_adapter].compact.each do |adapter|
           deleted = true if safely_delete_key(adapter, feature_name, key)
         end
-        record_local_write(feature_name)
         deleted
       end
 
@@ -372,13 +375,33 @@ module Magick
 
         begin
           redis_client = redis_adapter.client
-          redis_client&.publish(CACHE_INVALIDATION_CHANNEL, feature_name.to_s)
+          redis_client&.publish(CACHE_INVALIDATION_CHANNEL, invalidation_message(feature_name))
         rescue StandardError => e
           # Best effort for this process, but a dropped invalidation leaves every
           # OTHER process holding a stale value, so it is reported like any other
           # failed write rather than swallowed.
           AdapterFailure.report(backend: :redis, operation: :publish_cache_invalidation,
                                 feature_name: feature_name, error: e)
+        end
+      end
+
+      # This registry's identity on the invalidation channel. Every message it
+      # publishes carries it, and it is the ONLY thing the subscriber suppresses
+      # on: a message is ignored when we published it, and acted on otherwise.
+      #
+      # Per-registry rather than per-process, so two registries sharing a process
+      # still see each other's writes; random, because PIDs collide across
+      # containers.
+      def publisher_id
+        @identity_mutex.synchronize do
+          # A forked child inherits the parent's identity along with the rest of
+          # its memory. Re-mint it so parent and child do not each mistake the
+          # other's invalidations for their own echo and ignore them.
+          if @publisher_id_pid != Process.pid
+            @publisher_id_pid = Process.pid
+            @publisher_id = generate_publisher_id
+          end
+          @publisher_id
         end
       end
 
@@ -488,29 +511,35 @@ module Magick
       # the feature from the shared backend. Returns true when the message was
       # acted on, false when it was rejected/skipped (used by specs).
       #
-      # Every VALID, non-self message triggers a full-state reload. We do NOT
-      # debounce by a time window: a single enable/disable emits two publishes
-      # (targeting then value), and dropping the second would leave this process
-      # holding the old value until its memory TTL expires. Each reload reads the
+      # Suppression is keyed on WHO PUBLISHED the message, never on when we last
+      # wrote. A peer's message is always acted on, however close it lands to our
+      # own write: two containers toggling the same flag seconds apart must each
+      # end up on the shared store's value, and a "did I write this recently"
+      # window silently dropped exactly those messages, leaving both containers
+      # serving their own value indefinitely.
+      #
+      # Every peer message triggers a full-state reload. A single enable/disable
+      # emits two publishes (targeting then value); each reload reads the
       # feature's COMPLETE current state, so processing every message is
       # idempotent, and feature-flag writes are admin-rate — redundant reloads
       # are cheap and rare.
-      def process_cache_invalidation(feature_name)
-        feature_name_str = feature_name.to_s
+      def process_cache_invalidation(payload)
+        raw = payload.to_s
+        feature_name_str, publisher = parse_invalidation_message(raw)
 
         # Reject malformed payloads before doing anything with them. A shared
         # Redis DB is not a trust boundary — reject anything that isn't a
         # plausible feature identifier.
         unless FEATURE_NAME_PATTERN.match?(feature_name_str)
-          warn "Magick: ignoring malformed pubsub payload (#{feature_name_str.bytesize}B)" if rails_development?
+          warn "Magick: ignoring malformed pubsub payload (#{raw.bytesize}B)" if rails_development?
           return false
         end
 
-        # Skip self-invalidation: if this process just wrote this feature, memory
-        # already has the correct value. Reloading would revert it to stale data
-        # (especially with async writes that publish after the Redis write).
-        if local_write?(feature_name_str)
-          Rails.logger.debug "Magick: Skipping self-invalidation for '#{feature_name_str}'" if rails_development?
+        # Our own echo: memory already holds what we just wrote, and reloading
+        # could revert it to pre-write data (async writes publish after the Redis
+        # write). Only OUR messages are dropped here.
+        if publisher == publisher_id
+          Rails.logger.debug "Magick: Ignoring own invalidation for '#{feature_name_str}'" if rails_development?
           return false
         end
 
@@ -601,43 +630,31 @@ module Magick
         data.reject { |feature_name, _| reserved_store_name?(feature_name) }
       end
 
-      # Record that this process just wrote a feature, so the subscriber
-      # ignores its own Pub/Sub messages and doesn't revert the correct in-memory state.
-      def record_local_write(feature_name)
-        @reload_mutex.synchronize do
-          @local_writes[feature_name.to_s] = Time.now.to_f
-          # Also sweep stale tracking entries on the write path — a write-heavy
-          # process that rarely reads would otherwise never trigger cleanup,
-          # letting @local_writes grow unboundedly.
-          cleanup_stale_tracking_entries
-        end
+      # Wire format of an invalidation message: which feature changed, and which
+      # registry changed it.
+      def invalidation_message(feature_name)
+        JSON.generate('feature' => feature_name.to_s, 'publisher' => publisher_id)
       end
 
-      # Check if a feature was recently written by this process
-      def local_write?(feature_name_str)
-        @reload_mutex.synchronize do
-          # Periodic cleanup of stale entries to prevent unbounded growth
-          cleanup_stale_tracking_entries
+      # Returns [feature_name, publisher_id]. A bare feature name — what older
+      # processes publish — parses as a message with no publisher, which is
+      # therefore never mistaken for our own and is always acted on.
+      def parse_invalidation_message(raw)
+        return ['', nil] if raw.bytesize > MAX_INVALIDATION_PAYLOAD_BYTES
+        return [raw, nil] unless raw.start_with?('{')
 
-          wrote_at = @local_writes[feature_name_str]
-          return false unless wrote_at
-
-          if (Time.now.to_f - wrote_at) < LOCAL_WRITE_TTL
-            true
-          else
-            @local_writes.delete(feature_name_str)
-            false
-          end
+        message = begin
+          JSON.parse(raw)
+        rescue JSON::ParserError
+          nil
         end
+        return ['', nil] unless message.is_a?(Hash)
+
+        [message['feature'].to_s, message['publisher']]
       end
 
-      # Clean up stale entries from tracking hashes (called under mutex)
-      def cleanup_stale_tracking_entries
-        now = Time.now.to_f
-        return if @last_tracking_cleanup && (now - @last_tracking_cleanup) < 60.0
-
-        @last_tracking_cleanup = now
-        @local_writes.delete_if { |_, wrote_at| (now - wrote_at) >= LOCAL_WRITE_TTL }
+      def generate_publisher_id
+        "#{Process.pid}-#{SecureRandom.hex(8)}"
       end
 
       # Start a background thread to listen for cache invalidation messages
@@ -674,8 +691,8 @@ module Magick
           end
 
           @subscriber.subscribe(CACHE_INVALIDATION_CHANNEL) do |on|
-            on.message do |_channel, feature_name|
-              process_cache_invalidation(feature_name)
+            on.message do |_channel, payload|
+              process_cache_invalidation(payload)
             rescue StandardError => e
               # Log error but don't crash the subscriber thread
               # Skip logging RSpec mock errors in test environments
@@ -689,7 +706,7 @@ module Magick
               end
 
               if defined?(Rails) && Rails.env.development?
-                warn "Magick: Error processing cache invalidation for '#{Magick::LogSafe.sanitize(feature_name)}': #{Magick::LogSafe.sanitize(e.message)}"
+                warn "Magick: Error processing cache invalidation for '#{Magick::LogSafe.sanitize(payload)}': #{Magick::LogSafe.sanitize(e.message)}"
               end
             end
           end

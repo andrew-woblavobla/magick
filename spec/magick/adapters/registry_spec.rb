@@ -82,28 +82,99 @@ RSpec.describe Magick::Adapters::Registry do
     end
   end
 
-  # Cross-process cache invalidation must never drop the FINAL state change.
-  # enable/disable emits two publishes (targeting then value); a time-window
-  # debounce would drop the second, leaving other containers stale for up to
-  # the memory TTL. process_cache_invalidation reloads on EVERY valid message.
+  # Cross-process cache invalidation must never drop a peer's change. Suppression
+  # is keyed on WHO published the message: a registry drops exactly its own echo
+  # and acts on every peer message, no matter how recently it wrote that feature
+  # itself. (A time window keyed on "did I write this recently" dropped peer
+  # messages too, so two containers toggling one flag inside the window each kept
+  # serving their own value.) Every acted-on message reloads the feature's full
+  # state, so repeats are idempotent.
   describe '#process_cache_invalidation' do
-    it 'processes a valid feature name' do
-      expect(registry.send(:process_cache_invalidation, 'good_name')).to be true
+    let(:peer) { described_class.new(Magick::Adapters::Memory.new) }
+
+    def message_from(publisher, feature_name)
+      JSON.generate('feature' => feature_name, 'publisher' => publisher)
+    end
+
+    it 'acts on a peer message' do
+      expect(registry.send(:process_cache_invalidation, message_from('peer-1', 'good_name'))).to be true
     end
 
     it 'processes the same feature on consecutive invalidations (no trailing-message drop)' do
-      expect(registry.send(:process_cache_invalidation, 'good_name')).to be true
-      expect(registry.send(:process_cache_invalidation, 'good_name')).to be true
+      expect(registry.send(:process_cache_invalidation, message_from('peer-1', 'good_name'))).to be true
+      expect(registry.send(:process_cache_invalidation, message_from('peer-1', 'good_name'))).to be true
     end
 
     it 'rejects malformed feature names off the wire' do
-      expect(registry.send(:process_cache_invalidation, "bad\nname")).to be false
-      expect(registry.send(:process_cache_invalidation, 'x' * 200)).to be false
+      expect(registry.send(:process_cache_invalidation, message_from('peer-1', "bad\nname"))).to be false
+      expect(registry.send(:process_cache_invalidation, message_from('peer-1', 'x' * 200))).to be false
     end
 
-    it 'skips self-invalidation for a feature this process just wrote' do
-      registry.send(:record_local_write, 'mine')
-      expect(registry.send(:process_cache_invalidation, 'mine')).to be false
+    it 'rejects payloads that are not an invalidation message' do
+      expect(registry.send(:process_cache_invalidation, '{"feature":')).to be false
+      expect(registry.send(:process_cache_invalidation, JSON.generate(%w[not a hash]))).to be false
+      expect(registry.send(:process_cache_invalidation, "{\"feature\":\"#{'x' * 600}\"}")).to be false
+    end
+
+    it 'ignores the message it publishes for its own write' do
+      own_message = registry.send(:invalidation_message, 'mine')
+
+      expect(registry.send(:process_cache_invalidation, own_message)).to be false
+    end
+
+    it 'acts on the same message when a different registry published it' do
+      peer_message = peer.send(:invalidation_message, 'mine')
+
+      expect(registry.send(:process_cache_invalidation, peer_message)).to be true
+    end
+
+    it 'acts on a peer message for a feature it wrote itself a moment ago' do
+      registry.set('mine', 'value', true)
+
+      expect(registry.send(:process_cache_invalidation, peer.send(:invalidation_message, 'mine'))).to be true
+    end
+
+    it 'clears the local cache entry a peer invalidated, even right after a local write' do
+      registry.set('mine', 'value', true)
+
+      registry.send(:process_cache_invalidation, peer.send(:invalidation_message, 'mine'))
+
+      expect(memory_adapter.get('mine', 'value')).to be_nil
+    end
+
+    it 'acts on a bare feature name published by an older process' do
+      expect(registry.send(:process_cache_invalidation, 'good_name')).to be true
+    end
+  end
+
+  # The publisher id is the whole basis of self-suppression: it must be unique
+  # per registry, stable for the life of the process, and re-minted after a fork
+  # so a parent and its worker never ignore each other's invalidations.
+  describe '#publisher_id' do
+    it 'is stable across calls' do
+      expect(registry.publisher_id).to eq(registry.publisher_id)
+    end
+
+    it 'differs between two registries in the same process' do
+      expect(registry.publisher_id).not_to eq(described_class.new(Magick::Adapters::Memory.new).publisher_id)
+    end
+
+    it 'is re-minted in a forked child', if: Process.respond_to?(:fork) do
+      parent_id = registry.publisher_id
+      reader, writer = IO.pipe
+
+      pid = fork do
+        reader.close
+        writer.write(registry.publisher_id)
+        writer.close
+        exit!(0)
+      end
+      writer.close
+      child_id = reader.read
+      reader.close
+      Process.wait(pid)
+
+      expect(child_id).not_to eq(parent_id)
     end
   end
 end

@@ -922,6 +922,9 @@ Magick uses a dual-adapter strategy:
 The registry automatically falls back from memory to Redis if a feature isn't found in memory. When features are updated:
 - Both adapters are updated simultaneously
 - Cache invalidation messages are published via Redis Pub/Sub to notify other processes
+- Each message carries the identity of the process that published it: a process ignores
+  only its own messages and always acts on a peer's, so two processes writing the same
+  flag moments apart still converge on the shared store's value
 - Targeting updates trigger immediate cache invalidation to ensure consistency
 
 #### Memory-Only Mode

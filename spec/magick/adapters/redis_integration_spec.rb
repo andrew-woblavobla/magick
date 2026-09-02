@@ -152,4 +152,48 @@ RSpec.describe Magick::Adapters::Redis, 'integration', :redis, if: RedisSpecSupp
     r1.shutdown
     r2.shutdown
   end
+
+  # The regression this file exists to pin down: two containers toggling the
+  # same flag close together. Suppression used to be keyed on "did I write this
+  # feature in the last 2.0s", so r1 — having just written shared_flag — threw
+  # away r2's invalidation and went on serving 'from_r1' while Redis held
+  # 'from_r2'. Nothing healed it: an initialized value is only cleared by an
+  # explicit reload. Keyed on the publisher, r1 acts on the peer's message and
+  # r2 keeps the value it just wrote.
+  it 'observes a peer write that lands well inside the old 2.0s suppression window' do
+    memory1 = Magick::Adapters::Memory.new
+    memory2 = Magick::Adapters::Memory.new
+    r1 = Magick::Adapters::Registry.new(memory1, described_class.new(RedisSpecSupport.new_client))
+    r2 = Magick::Adapters::Registry.new(memory2, described_class.new(RedisSpecSupport.new_client))
+
+    begin
+      sleep 0.2 # let both subscribers connect
+
+      r1.set(:shared_flag, 'value', 'from_r1')
+      r1_wrote_at = Time.now
+      expect(memory1.get(:shared_flag, 'value')).to eq('from_r1')
+
+      sleep 0.2 # let r1's own invalidation settle before the peer writes
+      r2.set(:shared_flag, 'value', 'from_r2')
+      expect(Time.now - r1_wrote_at).to be < 2.0 # the old suppression window
+
+      wait_until { memory1.get(:shared_flag, 'value').nil? }
+
+      # r1 dropped its diverged copy and reads the shared store again...
+      expect(memory1.get(:shared_flag, 'value')).to be_nil
+      expect(r1.get(:shared_flag, 'value')).to eq('from_r2')
+      # ...while r2, the publisher, did not reload in response to its own write.
+      expect(memory2.get(:shared_flag, 'value')).to eq('from_r2')
+    ensure
+      r1.shutdown
+      r2.shutdown
+    end
+  end
+
+  # Poll rather than sleep a fixed amount: Pub/Sub delivery is fast but not
+  # instantaneous, and a fixed sleep is either flaky or needlessly slow.
+  def wait_until(timeout: 2.0)
+    deadline = Time.now + timeout
+    sleep 0.02 until yield || Time.now > deadline
+  end
 end

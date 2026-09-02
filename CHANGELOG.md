@@ -38,6 +38,17 @@ archive stops rewriting everything already in it.
   shutting down a registry with a live Redis subscription raised. The guards now
   use `next`.
 
+- **Cross-container cache invalidation is no longer dropped.** Invalidation
+  messages now carry the publishing registry's identity (`Registry#publisher_id`,
+  re-minted after a fork), and a subscriber ignores only the messages it
+  published itself. The previous 2.0s `LOCAL_WRITE_TTL` window suppressed *any*
+  invalidation for a feature this process had written recently — including a
+  peer's — so two containers toggling the same flag inside that window each
+  discarded the other's message and kept serving their own value while the
+  shared store held one of them. Nothing healed the split: a feature's cached
+  value is only cleared by an explicit reload. The window is gone, not
+  shortened.
+
 - **Version numbers are allocated by the shared store.** Version history
   clobbered itself across processes — two containers over one shared backend
   destroyed each other's snapshots and disagreed about what a version number
@@ -198,6 +209,13 @@ archive stops rewriting everything already in it.
   are development dependencies; the specs skip when they are absent.
 
 ### Upgrading
+
+- **Invalidation messages changed shape.** They are now JSON
+  (`{"feature":…,"publisher":…}`) rather than a bare feature name. An upgraded
+  process still acts on the bare names an un-upgraded one publishes, so it never
+  misses a peer's change; an un-upgraded process ignores the JSON and stays
+  stale until its next write. Finish the rollout before relying on
+  cross-container invalidation.
 
 - **Version history written by 1.5.0 stays readable.** The old single-list
   window is still read, and the first append after the upgrade migrates its
