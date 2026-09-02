@@ -3,11 +3,13 @@
 module Magick
   class Config
     attr_accessor :adapter_registry, :performance_metrics, :audit_log, :versioning, :warn_on_deprecated,
-                  :async_updates, :memory_ttl, :circuit_breaker_threshold, :circuit_breaker_timeout, :redis_url, :redis_namespace, :redis_db, :environment, :active_record_model_class
+                  :async_updates, :async_queue_limit, :async_enqueue_timeout, :memory_ttl, :circuit_breaker_threshold, :circuit_breaker_timeout, :redis_url, :redis_namespace, :redis_db, :environment, :active_record_model_class
 
     def initialize
       @warn_on_deprecated = false
       @async_updates = false
+      @async_queue_limit = nil # nil => Adapters::AsyncWriter::DEFAULT_QUEUE_LIMIT
+      @async_enqueue_timeout = nil # nil => Adapters::AsyncWriter::DEFAULT_ENQUEUE_TIMEOUT
       @memory_ttl = 3600 # 1 hour
       @circuit_breaker_threshold = 5
       @circuit_breaker_timeout = 60
@@ -70,7 +72,7 @@ module Magick
           redis_adapter,
           active_record_adapter: active_record_adapter,
           circuit_breaker: cb,
-          async: @async_updates
+          **async_registry_options
         )
       end
 
@@ -103,8 +105,8 @@ module Magick
           redis_adapter,
           active_record_adapter: active_record_adapter,
           circuit_breaker: cb,
-          async: @async_updates,
-          primary: primary_adapter
+          primary: primary_adapter,
+          **async_registry_options
         )
       end
 
@@ -156,8 +158,17 @@ module Magick
       @circuit_breaker_timeout = timeout if timeout
     end
 
-    def async_updates(enabled: true)
+    # Asynchronous Redis writes. All async writes go through ONE serialized
+    # writer thread, so they reach Redis in the order they were issued and a
+    # burst costs one thread, not one per write.
+    #
+    #   queue_limit     — pending writes held before backpressure kicks in.
+    #   enqueue_timeout — seconds a caller blocks on a full queue before the
+    #                     write is dropped with a warning.
+    def async_updates(enabled: true, queue_limit: nil, enqueue_timeout: nil)
       @async_updates = enabled
+      @async_queue_limit = queue_limit unless queue_limit.nil?
+      @async_enqueue_timeout = enqueue_timeout unless enqueue_timeout.nil?
     end
 
     def memory_ttl(seconds)
@@ -325,7 +336,6 @@ module Magick
         timeout: @circuit_breaker_timeout
       )
 
-      async_enabled = async.nil? ? @async_updates : async
       primary_adapter = primary || (@active_record_primary ? :active_record : :memory)
 
       @adapter_registry = Adapters::Registry.new(
@@ -333,9 +343,19 @@ module Magick
         redis_adapter,
         active_record_adapter: active_record_adapter,
         circuit_breaker: cb,
-        async: async_enabled,
-        primary: primary_adapter
+        primary: primary_adapter,
+        **async_registry_options(async)
       )
+    end
+
+    # Async knobs handed to Adapters::Registry. `override` is the explicit
+    # `async:` argument of `adapter :registry`, which wins over the DSL flag.
+    def async_registry_options(override = nil)
+      {
+        async: override.nil? ? @async_updates : override,
+        async_queue_limit: @async_queue_limit,
+        async_enqueue_timeout: @async_enqueue_timeout
+      }
     end
 
     def default_adapter_registry

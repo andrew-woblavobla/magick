@@ -81,6 +81,17 @@ archive stops rewriting everything already in it.
   value is only cleared by an explicit reload. The window is gone, not
   shortened.
 
+- **Async Redis writes are serialized and bounded.** `async_updates enabled:
+  true` spawned one thread per write, with no ordering and no cap. Two writes to
+  the same feature could land out of order, leaving memory with the newer value
+  and Redis with the older one — permanently divergent, with the trailing
+  Pub/Sub publish telling every other process to load the stale value. 200
+  writes also meant 200 threads and 200 Redis connections, enough for an Admin
+  UI bulk toggle or a boot-time DSL apply to exhaust the connection pool. Async
+  writes now go through a single `Magick::Adapters::AsyncWriter` thread per
+  registry, draining a bounded FIFO queue: writes reach Redis in the order they
+  were issued, and a burst costs one thread whatever its size.
+
 - **Version numbers are allocated by the shared store.** Version history
   clobbered itself across processes — two containers over one shared backend
   destroyed each other's snapshots and disagreed about what a version number
@@ -263,6 +274,23 @@ archive stops rewriting everything already in it.
   cycle evaluates as unsatisfied and is reported instead of raising
   `SystemStackError` — which, not being a `StandardError`, escaped the fail-safe
   rescue in `#enabled?`.
+- **`async_updates` takes `queue_limit:` (default 1000) and `enqueue_timeout:`
+  (default 5 seconds).** When the queue is full a caller blocks for up to
+  `enqueue_timeout` — real backpressure — and only then is the write dropped.
+  Blocking forever would turn a wedged Redis into an application-wide stall, and
+  running the write inline would let it overtake the writes already queued for
+  that feature, which is the reordering being fixed. A dropped write is reported
+  through the same channel as a failed one (error log +
+  `magick.feature_flag.adapter_write_failed`, `reason:` naming the full queue),
+  never silently discarded.
+
+- **Shutdown drains pending async writes** within the shutdown timeout, before
+  the Pub/Sub connection is closed, and reports whatever does not fit rather
+  than waiting on it — shutdown stays bounded. Writes issued after shutdown are
+  performed inline instead of being lost.
+
+- **`Registry#async_writer` / `Registry#pending_async_writes`** expose the
+  writer and its backlog for observability.
 
 ### Development
 

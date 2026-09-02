@@ -17,8 +17,12 @@ Magick.configure do
   # Configure circuit breaker for Redis failures
   # circuit_breaker threshold: 5, timeout: 60
 
-  # Enable async updates for Redis (non-blocking, improves performance)
-  # async_updates enabled: true
+  # Enable async updates for Redis (non-blocking, improves performance).
+  # Writes are drained by ONE serialized background writer, so they reach
+  # Redis in the order they were issued and a bulk toggle costs one thread.
+  # The queue is bounded: a caller blocks up to `enqueue_timeout` seconds on
+  # a full queue, then the write is dropped with a warning.
+  # async_updates enabled: true, queue_limit: 1000, enqueue_timeout: 5
 
   # Enable performance metrics tracking
   performance_metrics enabled: true
@@ -66,5 +70,6 @@ end
 # Graceful shutdown is handled automatically in Rails via an at_exit hook
 # wired by the Railtie. In long-running non-Rails processes (rake tasks,
 # CLI tools), call `Magick.shutdown!` explicitly before exit so the
-# Redis Pub/Sub subscriber and async metrics thread terminate cleanly.
+# Redis Pub/Sub subscriber, the async metrics thread and the async write
+# queue terminate cleanly (pending writes are drained within the timeout).
 

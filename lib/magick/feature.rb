@@ -953,7 +953,8 @@ module Magick
       @_targeting_empty = targeting.empty?
 
       # NOTE: We don't need to explicitly publish cache invalidation here because:
-      # 1. adapter_registry.set already publishes cache invalidation (synchronously for async Redis updates)
+      # 1. adapter_registry.set already publishes cache invalidation (for async
+      #    updates, from the serialized writer, right after the Redis write lands)
       # 2. Publishing twice causes duplicate reloads in other processes
       # 3. The set method handles both sync and async Redis updates correctly
     end

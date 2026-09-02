@@ -11,6 +11,7 @@ begin
 rescue LoadError, NameError
   # ActiveRecord not available, skip
 end
+require_relative 'magick/adapters/async_writer'
 require_relative 'magick/adapters/registry'
 require_relative 'magick/targeting/base'
 require_relative 'magick/targeting/user'

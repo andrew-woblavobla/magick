@@ -71,3 +71,14 @@ process nor present in the backend. Governed by
 `Magick.unknown_dependency_policy` (`:satisfied` default, `:unsatisfied` to
 fail closed) and reported on stderr once per process. A prerequisite that is
 merely *unregistered here* is not unknown — it is evaluated from stored state.
+
+**Serialized writer (async writes)** — `Magick::Adapters::AsyncWriter`: the
+single background thread each registry uses to drain queued Redis writes when
+`async_updates` is enabled. One thread per registry, not per write, so writes
+to a feature reach Redis in the order they were issued. Avoid: "write pool",
+"worker pool" — there is exactly one worker.
+
+**Backpressure / drop (async writes)** — the bounded-queue policy: a caller
+blocks up to `enqueue_timeout` while the queue is full (backpressure), then
+the write is dropped and logged. Memory, which serves reads, is unaffected.
+Avoid: "retry", "buffer overflow".

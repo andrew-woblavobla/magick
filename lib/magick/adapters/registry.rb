@@ -19,12 +19,16 @@ module Magick
       FEATURE_NAME_PATTERN = /\A[a-zA-Z0-9_\-.:]{1,120}\z/.freeze
 
       def initialize(memory_adapter, redis_adapter = nil, active_record_adapter: nil, circuit_breaker: nil,
-                     async: false, primary: nil)
+                     async: false, primary: nil, async_queue_limit: nil, async_enqueue_timeout: nil)
         @memory_adapter = memory_adapter
         @redis_adapter = redis_adapter
         @active_record_adapter = active_record_adapter
         @circuit_breaker = circuit_breaker || Magick::CircuitBreaker.new
         @async = async
+        @async_queue_limit = async_queue_limit
+        @async_enqueue_timeout = async_enqueue_timeout
+        @async_writer = nil
+        @write_order_mutex = Mutex.new
         @primary = primary || :memory # :memory, :redis, or :active_record
         @subscriber_thread = nil
         @subscriber = nil
@@ -68,6 +72,9 @@ module Magick
           @stopping = true
         end
 
+        # Drain queued writes while the Redis connection is still usable.
+        drain_async_writer(timeout)
+
         close_subscriber_connection(@subscriber)
         terminate_subscriber_thread(@subscriber_thread, timeout)
 
@@ -107,20 +114,14 @@ module Magick
       end
 
       def set(feature_name, key, value)
-        # Update memory first (always synchronous)
-        memory_adapter&.set(feature_name, key, value)
+        update_redis = proc do
+          write_to_redis(:set, feature_name) { redis_adapter.set(feature_name, key, value) }
+        end
 
-        # Update Redis if available
-        if redis_adapter
-          update_redis = proc do
-            write_to_redis(:set, feature_name) { redis_adapter.set(feature_name, key, value) }
-          end
-
-          if @async && defined?(Thread)
-            spawn_async_write(feature_name, update_redis)
-          else
-            publish_cache_invalidation(feature_name) if update_redis.call
-          end
+        # Memory is always updated synchronously; Redis follows either inline
+        # or through the serialized async writer.
+        write_through(feature_name, update_redis) do
+          memory_adapter&.set(feature_name, key, value)
         end
 
         # Always update Active Record if available (as fallback/persistence layer)
@@ -271,18 +272,12 @@ module Magick
 
       # Bulk set multiple keys for a feature in one call (1 query instead of N)
       def set_all_data(feature_name, data_hash)
-        memory_adapter&.set_all_data(feature_name, data_hash)
+        update_redis = proc do
+          write_to_redis(:set_all_data, feature_name) { redis_adapter.set_all_data(feature_name, data_hash) }
+        end
 
-        if redis_adapter
-          update_redis = proc do
-            write_to_redis(:set_all_data, feature_name) { redis_adapter.set_all_data(feature_name, data_hash) }
-          end
-
-          if @async && defined?(Thread)
-            spawn_async_write(feature_name, update_redis)
-          else
-            publish_cache_invalidation(feature_name) if update_redis.call
-          end
+        write_through(feature_name, update_redis) do
+          memory_adapter&.set_all_data(feature_name, data_hash)
         end
 
         return unless active_record_adapter
@@ -397,6 +392,15 @@ module Magick
       # memory/Redis, unlimited archive written to ActiveRecord only.
       attr_reader :memory_adapter, :redis_adapter, :active_record_adapter
 
+      # The serialized writer draining async Redis writes, or nil when this
+      # registry has not made one yet (sync mode, or no write has happened).
+      attr_reader :async_writer
+
+      # Writes accepted by the async writer but not yet sent to Redis.
+      def pending_async_writes
+        @async_writer ? @async_writer.pending : 0
+      end
+
       private
 
       attr_reader :circuit_breaker
@@ -465,10 +469,10 @@ module Magick
 
       def terminate_subscriber_thread(thread, timeout)
         return unless thread
-        return if thread.join(timeout)
+        return if join_quietly(thread, timeout)
 
         thread.kill
-        thread.join(1) # give it a moment to actually unwind
+        join_quietly(thread, 1) # give it a moment to actually unwind
       end
 
       # Run a Redis write through the circuit breaker. Returns true when the
@@ -505,19 +509,115 @@ module Magick
         false
       end
 
-      # Fire-and-forget async Redis write. Wrapped so that a failure in the
-      # update or publish step is reported rather than silently killing the
-      # thread — Thread#abort_on_exception is false, which otherwise swallows
-      # the error completely.
-      def spawn_async_write(feature_name, update_redis)
-        thread = Thread.new do
+      # Thread#join re-raises whatever killed the thread. A subscriber that
+      # died on its own — its connection torn down under the blocking
+      # `subscribe`, a driver raising on close — must not turn shutdown into an
+      # exception for the caller: the thread is gone either way, which is all
+      # shutdown needs to know.
+      def join_quietly(thread, timeout)
+        !thread.join(timeout).nil?
+      rescue StandardError
+        true
+      end
+
+      # Apply one logical write: the memory update (given as a block) plus the
+      # matching Redis update, either inline or via the serialized async writer.
+      #
+      # In async mode the memory update and the enqueue happen under one lock.
+      # That is what makes ordering meaningful under concurrency: two threads
+      # writing the same feature agree on who went last, and the writer sends
+      # their updates to Redis in that same order, so Redis can no longer end up
+      # holding the older value.
+      #
+      # Peers are invited to reload only once Redis has actually accepted the
+      # write — on this path and the async one alike. A write the backend
+      # refused, or one the open breaker dropped, publishes nothing, because
+      # inviting a reload would hand every peer the pre-write value.
+      def write_through(feature_name, update_redis)
+        unless redis_adapter && async_writes?
+          yield
+          return unless redis_adapter
+
+          publish_cache_invalidation(feature_name) if update_redis.call
+          return
+        end
+
+        @write_order_mutex.synchronize do
+          yield
+          submit_async_write(feature_name, update_redis)
+        end
+      end
+
+      def async_writes?
+        @async && defined?(Thread)
+      end
+
+      # Hand the Redis update + its cache-invalidation publish to the single
+      # writer thread.
+      #
+      # The job reports its own failures: it runs off the caller's stack, where
+      # nothing else would surface them, and Thread#abort_on_exception is false.
+      #
+      # `:rejected` means the writer is shutting down and will never run the
+      # job, so it runs inline here rather than being lost.
+      def submit_async_write(feature_name, update_redis)
+        job = proc do
           publish_cache_invalidation(feature_name) if update_redis.call
         rescue StandardError => e
           AdapterFailure.report(backend: :redis, operation: :async_write, feature_name: feature_name, error: e)
         end
-        thread.name = "magick-async-write-#{feature_name}" if thread.respond_to?(:name=)
-        thread.abort_on_exception = false
-        thread
+
+        # Shutdown is terminal: never resurrect a writer thread that nothing
+        # would drain. Post-shutdown writes go straight to Redis inline.
+        writer = stopping? ? nil : (@async_writer ||= build_async_writer)
+        result = writer ? writer.submit(feature_name, &job) : :rejected
+        job.call if result == :rejected
+        result
+      end
+
+      # Built on first async write (never at construction), so registries that
+      # never write asynchronously cost no threads. Always called with
+      # @write_order_mutex held.
+      #
+      # A dropped write is a write that never reached Redis, so it is reported
+      # exactly like one the backend refused, not left as a bare warning.
+      def build_async_writer
+        AsyncWriter.new(
+          queue_limit: @async_queue_limit,
+          enqueue_timeout: @async_enqueue_timeout,
+          name: 'magick-async-writer',
+          on_drop: method(:report_dropped_async_write)
+        )
+      end
+
+      def report_dropped_async_write(feature_name, dropped_total)
+        AdapterFailure.report(
+          backend: :redis, operation: :async_write, feature_name: feature_name,
+          reason: "async write queue full (limit #{@async_writer&.queue_limit}), write dropped; " \
+                  "#{dropped_total} dropped so far"
+        )
+      end
+
+      # Drain pending async writes before the Redis connection goes away.
+      #
+      # Read without taking @write_order_mutex on purpose: a producer blocked
+      # on a full queue holds that lock, and AsyncWriter#shutdown is what wakes
+      # it up. Taking the lock here would make shutdown wait for the very
+      # producer it needs to release.
+      def drain_async_writer(timeout)
+        writer = @async_writer
+        return unless writer
+
+        stats = writer.shutdown(timeout: timeout)
+        abandoned = stats[:abandoned].to_i
+        return if abandoned.zero?
+
+        # Abandoned writes never reached Redis either, so they are reported on
+        # the same channel rather than vanishing into a shutdown log line.
+        AdapterFailure.report(
+          backend: :redis, operation: :async_write,
+          reason: "abandoned #{abandoned} pending write(s) after #{timeout}s drain timeout"
+        )
       end
 
       # Handle one cache-invalidation message: refresh this process's view of

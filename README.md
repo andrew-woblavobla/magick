@@ -97,8 +97,9 @@ Magick.configure do
   # Circuit breaker settings
   circuit_breaker threshold: 5, timeout: 60
 
-  # Async updates
-  async_updates enabled: true
+  # Async updates: Redis writes are handed to one serialized background
+  # writer instead of blocking the caller. See "Async Updates" below.
+  async_updates enabled: true, queue_limit: 1000, enqueue_timeout: 5
 
   # Enable services
   performance_metrics(
@@ -995,6 +996,64 @@ With Redis configured:
 
 **Important:** By default, Magick uses Redis database 1 to avoid conflicts with Rails cache (which typically uses database 0). This ensures that clearing Rails cache (`Rails.cache.clear`) won't affect your feature toggle states.
 
+#### Async Updates
+
+With `async_updates enabled: true`, memory is still updated synchronously but
+the Redis write (and its Pub/Sub invalidation) is handed to a background
+**serialized writer**: one thread per registry, draining a bounded FIFO queue.
+
+```ruby
+Magick.configure do
+  async_updates enabled: true,
+                queue_limit: 1000,   # pending writes held before backpressure
+                enqueue_timeout: 5   # seconds a caller waits on a full queue
+end
+```
+
+Two properties follow from the single writer, and both matter:
+
+- **Order is preserved.** Writes to the same feature reach Redis in the order
+  they were issued, so Redis cannot end up holding an older value than memory
+  (and the trailing invalidation cannot tell other processes to load a stale
+  one).
+- **Resources are bounded.** A bulk toggle of 200 features costs *one* thread
+  and *one* Redis connection, not 200 of each.
+
+**When the queue is full** the caller blocks for up to `enqueue_timeout`
+seconds — real backpressure, the queue drains while it waits. If it is still
+full when that expires, the write is **dropped**. A dropped write never reaches
+Redis, so it is reported exactly like a backend write that failed (see
+[When a Backend Write Fails](#when-a-backend-write-fails)): error-severity log
+line plus a `magick.feature_flag.adapter_write_failed` event, carrying the
+running drop total. The announcement is rate-limited to once a second; every
+drop is still counted.
+
+```
+Magick: redis async_write failed for 'checkout_v2': async write queue full (limit 1000), write dropped; 3 dropped so far
+```
+
+Dropping is deliberate. Blocking forever would turn a wedged Redis into an
+application-wide stall, and running the write inline would let it overtake the
+writes already queued for that feature — the exact out-of-order divergence the
+writer exists to prevent. A full queue means Redis is down or unreachably slow,
+in which case the write would most likely have failed anyway; memory (the read
+path) still holds the correct value, and the drop is loud rather than silent.
+Raise `queue_limit` if you legitimately burst harder than that.
+
+**On shutdown** (`Magick.shutdown!`) the writer stops accepting work and drains
+its backlog within the shutdown timeout. Anything still queued when the timeout
+expires is abandoned — reported on the same channel, not waited on — so
+shutdown never hangs:
+
+```
+Magick: redis async_write failed: abandoned 12 pending write(s) after 5s drain timeout
+```
+
+Writes issued after shutdown are performed inline rather than lost.
+
+Async updates are **off by default**; without them every Redis write is
+synchronous and ordering is the caller's own.
+
 #### ActiveRecord Adapter (Optional)
 
 The ActiveRecord adapter provides database-backed persistent storage for feature flags. It's useful when you want to:
@@ -1332,7 +1391,8 @@ config.require_role = 'admin'   # => Magick::ConfigurationError
 ## Graceful Shutdown
 
 Magick starts a background Redis Pub/Sub subscriber thread for cross-process
-cache invalidation and an asynchronous metrics processor. Both must be
+cache invalidation, an asynchronous metrics processor, and — when
+`async_updates` is enabled — one serialized write draining thread. All must be
 stopped before the host process exits or Puma's graceful-stop will block on
 the still-running `Redis#subscribe` call.
 
@@ -1344,6 +1404,10 @@ non-Rails processes (rake tasks, CLI tools) call it explicitly:
 Magick.shutdown!          # default 5 second join timeout
 Magick.shutdown!(timeout: 1)  # more aggressive
 ```
+
+The timeout is also the async writer's drain budget: pending Redis writes are
+flushed first (while the connection is still usable), and whatever does not
+fit in that budget is abandoned with a log line instead of blocking exit.
 
 Fork-based deployments (Puma workers with `preload_app!`, Unicorn) are handled
 automatically. A Rack middleware (`Magick::Rails::SubscriberMiddleware`) calls
