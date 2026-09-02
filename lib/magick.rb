@@ -50,6 +50,9 @@ if defined?(Rails)
 end
 
 module Magick
+  # Accepted values for Magick.unknown_dependency_policy (see below).
+  UNKNOWN_DEPENDENCY_POLICIES = %i[satisfied unsatisfied].freeze
+
   class << self
     attr_accessor :adapter_registry, :default_adapter, :audit_log, :versioning,
                   :warn_on_deprecated
@@ -83,6 +86,37 @@ module Magick
     # Getter for performance_metrics
     def performance_metrics
       @performance_metrics
+    end
+
+    # What to do when a feature depends on a prerequisite that is registered
+    # nowhere in this process AND absent from the shared backend.
+    #
+    #   :satisfied   (default) the unknown prerequisite is ignored; the
+    #                dependent feature falls back to its own value/targeting.
+    #                A prerequisite that has not been deployed yet, or a typo,
+    #                cannot switch off correctly configured features.
+    #   :unsatisfied the dependent feature evaluates false until the
+    #                prerequisite exists. Choose this when a missing
+    #                prerequisite means the dependent feature is unsafe to run.
+    #
+    # Either way the unknown name is reported (once per process, per feature)
+    # on stderr, so the condition is never silent.
+    def unknown_dependency_policy
+      @unknown_dependency_policy || :satisfied
+    end
+
+    def unknown_dependency_policy=(policy)
+      normalized = policy.to_sym
+      unless UNKNOWN_DEPENDENCY_POLICIES.include?(normalized)
+        raise ArgumentError,
+              "unknown_dependency_policy must be one of #{UNKNOWN_DEPENDENCY_POLICIES.inspect}, got #{policy.inspect}"
+      end
+
+      @unknown_dependency_policy = normalized
+    end
+
+    def unknown_dependency_satisfied?
+      unknown_dependency_policy == :satisfied
     end
 
     def configure(&block)
@@ -349,6 +383,7 @@ module Magick
       @versioning = nil
       @audit_log = nil
       @versioning_enabled = nil
+      @unknown_dependency_policy = nil
       @performance_metrics&.clear!
     end
 

@@ -739,6 +739,34 @@ if defined?(::ActiveRecord::Base)
         expect(feature2.enabled?(user_id: 123)).to be true
         expect(feature2.enabled?(group: 'beta')).to be true
       end
+
+      it 'persists dependencies' do
+        adapter.set(:test_feature, 'value', false)
+
+        Magick.configure do
+          active_record model_class: MagickFeature
+        end
+
+        feature = Magick::Feature.new(:test_feature, Magick.adapter_registry, type: :boolean, default_value: false)
+        feature.add_dependency(:prerequisite)
+        feature.enable
+
+        # A process that never declared the relationship reads it back from the table.
+        reloaded = Magick::Feature.new(:test_feature, Magick.adapter_registry, type: :boolean, default_value: false)
+        expect(reloaded.dependencies).to eq(['prerequisite'])
+
+        prerequisite = Magick::Feature.new(:prerequisite, Magick.adapter_registry, type: :boolean,
+                                                                                   default_value: false)
+        prerequisite.disable
+        expect(reloaded.enabled?).to be false
+
+        prerequisite.enable
+        expect(reloaded.enabled?).to be true
+
+        feature.remove_dependency(:prerequisite)
+        expect(Magick::Feature.new(:test_feature, Magick.adapter_registry, type: :boolean,
+                                                                          default_value: false).dependencies).to eq([])
+      end
     end
 
     describe 'edge cases' do

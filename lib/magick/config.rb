@@ -168,6 +168,21 @@ module Magick
       @warn_on_deprecated = enabled
     end
 
+    # How a prerequisite that exists neither in this process nor in the shared
+    # backend is treated: :satisfied (default, ignore it) or :unsatisfied
+    # (evaluate the dependent feature as off). See Magick.unknown_dependency_policy.
+    def unknown_dependency_policy(policy = nil)
+      return @unknown_dependency_policy if policy.nil?
+
+      unless Magick::UNKNOWN_DEPENDENCY_POLICIES.include?(policy.to_sym)
+        raise ArgumentError,
+              "unknown_dependency_policy must be one of #{Magick::UNKNOWN_DEPENDENCY_POLICIES.inspect}, " \
+              "got #{policy.inspect}"
+      end
+
+      @unknown_dependency_policy = policy.to_sym
+    end
+
     def environment(name)
       @environment = name.to_s
     end
@@ -206,6 +221,7 @@ module Magick
       Magick.audit_log = @audit_log if @audit_log || @audit_log_configured
       Magick.versioning = @versioning if @versioning
       Magick.versioning_enabled = @versioning_enabled unless @versioning_enabled.nil?
+      Magick.unknown_dependency_policy = @unknown_dependency_policy if @unknown_dependency_policy
       Magick.warn_on_deprecated = warn_on_deprecated
     end
 

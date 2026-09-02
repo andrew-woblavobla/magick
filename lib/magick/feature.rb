@@ -11,6 +11,17 @@ module Magick
     # What "off" means per feature type — the value #disable writes.
     DISABLED_VALUES = { boolean: false, string: '', number: 0 }.freeze
 
+    # Adapter keys holding the prerequisite set and the declaration that seeded
+    # it. Both live next to the feature's other state, so dependencies travel
+    # with the feature across processes and restarts.
+    DEPENDENCIES_KEY = 'dependencies'
+    DECLARED_DEPENDENCIES_KEY = 'declared_dependencies'
+
+    # How long a prerequisite that exists nowhere stays cached as "unknown"
+    # before the backend is probed again. Without it a misconfigured dependency
+    # would cost a Redis/DB round trip on every evaluation.
+    UNKNOWN_DEPENDENCY_RECHECK_SECONDS = 60.0
+
     attr_reader :name, :type, :status, :default_value, :description, :display_name, :group, :adapter_registry,
                 :targeting
 
@@ -24,7 +35,11 @@ module Magick
       @display_name = options[:name] || options[:display_name]
       @group = options[:group]
       @targeting = {}
-      @dependencies = options[:dependencies] ? Array(options[:dependencies]) : []
+      # nil means this process declares nothing about dependencies, so it must
+      # never overwrite what another process stored; [] is a real declaration
+      # ("this feature has no prerequisites").
+      @declared_dependencies = options[:dependencies] ? normalize_dependency_list(options[:dependencies]) : nil
+      @dependencies = @declared_dependencies&.dup || []
       @stored_value_initialized = false # Track if @stored_value has been explicitly set
 
       # Performance optimizations: cache expensive checks
@@ -498,28 +513,51 @@ module Magick
       true
     end
 
-    def add_dependency(dependency_name)
-      record_change('add_dependency', { dependency: { added: dependency_name.to_s } }) do
-        @dependencies ||= []
-        @dependencies << dependency_name.to_s unless @dependencies.include?(dependency_name.to_s)
+    # Prerequisites are stored with the rest of the feature's state, so a
+    # dependency added here is visible to every other process and survives a
+    # restart. Adding one already present is a no-op (no audit entry, no
+    # version).
+    def add_dependency(dependency_name, user_id: nil)
+      dep = normalize_dependency_name(dependency_name)
+      return true if dependencies.include?(dep)
+
+      record_change('add_dependency', { dependency: { added: dep } }, user_id: user_id) do
+        write_dependencies(dependencies + [dep])
 
         # Rails 8+ event
         if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
-          Magick::Rails::Events.dependency_added(name, dependency_name)
+          Magick::Rails::Events.dependency_added(name, dep)
         end
       end
 
       true
     end
 
-    def remove_dependency(dependency_name)
-      record_change('remove_dependency', { dependency: { removed: dependency_name.to_s } }) do
-        @dependencies&.delete(dependency_name.to_s)
+    def remove_dependency(dependency_name, user_id: nil)
+      dep = dependency_name.to_s
+      return true unless dependencies.include?(dep)
+
+      record_change('remove_dependency', { dependency: { removed: dep } }, user_id: user_id) do
+        write_dependencies(dependencies - [dep])
 
         # Rails 8+ event
         if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
-          Magick::Rails::Events.dependency_removed(name, dependency_name)
+          Magick::Rails::Events.dependency_removed(name, dep)
         end
+      end
+
+      true
+    end
+
+    # Wholesale prerequisite write: the list IS the new set, [] clears it.
+    # Used by import and by callers that manage the whole set at once.
+    def replace_dependencies(list, user_id: nil)
+      new_list = normalize_dependency_list(list)
+      return true if new_list == dependencies
+
+      changes = { dependencies: { from: dependencies.dup, to: new_list.dup } }
+      record_change('replace_dependencies', changes, user_id: user_id) do
+        write_dependencies(new_list)
       end
 
       true
@@ -720,6 +758,7 @@ module Magick
         registered.instance_variable_set(:@description, @description)
         registered.instance_variable_set(:@display_name, @display_name)
         registered.instance_variable_set(:@group, @group)
+        registered.instance_variable_set(:@dependencies, dependencies.dup)
         registered.instance_variable_set(:@targeting, @targeting.dup)
         registered.instance_variable_set(:@_targeting_empty, @_targeting_empty)
         registered.instance_variable_set(:@_perf_metrics_enabled, @_perf_metrics_enabled)
@@ -854,7 +893,7 @@ module Magick
       @targeting = normalize_targeting(data[:targeting])
       save_targeting
 
-      @dependencies = Array(data[:dependencies]).map(&:to_s)
+      write_dependencies(normalize_dependency_list(data[:dependencies]))
       true
     end
 
@@ -959,6 +998,10 @@ module Magick
 
       @targeting = normalize_targeting(all_data['targeting'])
 
+      @_loaded_dependencies = stored_dependency_list(all_data[DEPENDENCIES_KEY])
+      @_loaded_declared_dependencies = stored_dependency_list(all_data[DECLARED_DEPENDENCIES_KEY])
+      @dependencies = effective_dependencies
+
       # Track what was loaded so save_metadata_if_new can skip unnecessary writes
       @_loaded_description = all_data['description']
       @_loaded_display_name = all_data['display_name']
@@ -993,6 +1036,71 @@ module Magick
       if @group && @group != @_loaded_group
         adapter_registry.set(name, 'group', @group)
       end
+      seed_declared_dependencies
+    end
+
+    # Precedence for a feature that declares `dependencies:` in code: stored
+    # state wins. A dependency added at runtime on one container must not be
+    # erased by every other process that boots with the older declaration, and
+    # a process that declares nothing never writes, so it can never erase what
+    # another process declared. The one exception is a declaration that CHANGED
+    # since it was last recorded — editing `dependencies:` in code has to take
+    # effect on the next boot, so it replaces the stored set. Dropping the
+    # declaration is NOT a change (an undeclaring process is indistinguishable
+    # from a worker that simply registers the feature); remove it with
+    # #remove_dependency or #replace_dependencies.
+    def effective_dependencies
+      if @declared_dependencies && @declared_dependencies != @_loaded_declared_dependencies
+        return @declared_dependencies.dup
+      end
+
+      (@_loaded_dependencies || @declared_dependencies || []).dup
+    end
+
+    def seed_declared_dependencies
+      return unless @declared_dependencies
+      return if @dependencies == @_loaded_dependencies && @declared_dependencies == @_loaded_declared_dependencies
+
+      write_dependencies(@dependencies, declared: @declared_dependencies)
+    end
+
+    # Single write path for the prerequisite set: adapter first (so other
+    # processes and the next boot see it), then this process's caches.
+    def write_dependencies(list, declared: nil)
+      data = { DEPENDENCIES_KEY => list }
+      data[DECLARED_DEPENDENCIES_KEY] = declared if declared
+      adapter_registry.set_all_data(name, data)
+
+      @dependencies = list
+      @_loaded_dependencies = list.dup
+      @_loaded_declared_dependencies = declared.dup if declared
+
+      # Magick[:name] hands back a throwaway instance for unregistered names;
+      # keep the registered one (if any) in step with the write.
+      registered = Magick.features[name]
+      registered.instance_variable_set(:@dependencies, list.dup) if registered && !registered.equal?(self)
+
+      list
+    end
+
+    def normalize_dependency_list(list)
+      Array(list).map { |dep| normalize_dependency_name(dep) }.uniq
+    end
+
+    def normalize_dependency_name(dep)
+      dep_name = dep.to_s.strip
+      raise ArgumentError, 'Magick: dependency name cannot be blank' if dep_name.empty?
+      raise ArgumentError, "Magick: feature '#{name}' cannot depend on itself" if dep_name == name
+
+      dep_name
+    end
+
+    # Lenient on read (storage may predate the strict write path), strict on
+    # write. nil means the key is absent, which is not the same as a stored [].
+    def stored_dependency_list(raw)
+      return nil unless raw.is_a?(Array)
+
+      raw.map(&:to_s)
     end
 
     def load_value_from_adapter
@@ -1233,17 +1341,87 @@ module Magick
     end
 
     def dependencies_satisfied?(context)
-      deps = @dependencies
-      return true if deps.nil? || deps.empty?
+      deps = dependencies
+      return true if deps.empty?
 
-      deps.all? do |dep_name|
-        dep_feature = Magick.features[dep_name.to_s] || Magick.features[dep_name.to_sym]
-        # Unknown dependency is treated as satisfied — matches prior behavior
-        # where missing features were skipped in cascade logic.
-        next true unless dep_feature
-
-        dep_feature.enabled?(context)
+      # Cycle guard: a -> b -> a can never be satisfied, and without this the
+      # recursion below dies with SystemStackError, which is not a StandardError
+      # and so escapes the fail-safe rescue in #enabled?.
+      stack = (Thread.current[:magick_dependency_stack] ||= [])
+      if stack.include?(name)
+        warn_once_about_dependency(name, "dependency cycle: #{(stack + [name]).join(' -> ')}")
+        return false
       end
+
+      stack.push(name)
+      begin
+        deps.all? { |dep_name| dependency_satisfied?(dep_name.to_s, context) }
+      ensure
+        stack.pop
+      end
+    end
+
+    def dependency_satisfied?(dep_name, context)
+      prerequisite = Magick.features[dep_name] || prerequisite_from_backend(dep_name)
+      return prerequisite.enabled?(context) if prerequisite
+
+      # Genuinely unknown: not registered in this process AND absent from the
+      # shared backend. The deliberate default is to treat it as satisfied, so a
+      # prerequisite that has not been deployed yet cannot switch off features
+      # that are otherwise correctly configured; the dependent feature still
+      # obeys its own value and targeting. Set
+      # Magick.unknown_dependency_policy = :unsatisfied to fail closed instead.
+      # Either way the name is reported once per process, so the condition is
+      # never silent.
+      satisfied = Magick.unknown_dependency_satisfied?
+      warn_once_about_dependency(dep_name,
+                                 "unknown prerequisite '#{dep_name}' " \
+                                 "(treated as #{satisfied ? 'satisfied' : 'unsatisfied'})")
+      satisfied
+    end
+
+    # A prerequisite this process never declared can still exist in the shared
+    # backend — declared by another service, imported, or created through the
+    # Admin UI — so it is evaluated from stored state rather than written off as
+    # unknown. Deliberately not memoized: it reads through the registry's memory
+    # cache, while a cached instance would go stale (cache invalidation only
+    # reloads registered features).
+    def prerequisite_from_backend(dep_name)
+      return nil if recently_unknown?(dep_name)
+
+      data = adapter_registry.get_all_data(dep_name)
+      return remember_unknown_dependency(dep_name) if data.nil? || data.empty?
+
+      options = { type: (data['type'] || :boolean).to_sym }
+      options[:default_value] = data['default_value'] unless data['default_value'].nil?
+      begin
+        Feature.new(dep_name, adapter_registry, **options)
+      rescue StandardError
+        # Stored state we cannot build a feature from (bad type/default) is no
+        # more usable than a missing one, and re-probing it on every call would
+        # be pure cost.
+        remember_unknown_dependency(dep_name)
+      end
+    end
+
+    def remember_unknown_dependency(dep_name)
+      (@_unknown_dependencies ||= {})[dep_name] = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      nil
+    end
+
+    def recently_unknown?(dep_name)
+      last_seen = @_unknown_dependencies && @_unknown_dependencies[dep_name]
+      return false unless last_seen
+
+      (Process.clock_gettime(Process::CLOCK_MONOTONIC) - last_seen) < UNKNOWN_DEPENDENCY_RECHECK_SECONDS
+    end
+
+    def warn_once_about_dependency(key, message)
+      @_warned_dependencies ||= {}
+      return if @_warned_dependencies[key]
+
+      @_warned_dependencies[key] = true
+      warn "Magick: feature '#{Magick::LogSafe.sanitize(name)}': #{Magick::LogSafe.sanitize(message)}"
     end
 
     def excluded?(context)

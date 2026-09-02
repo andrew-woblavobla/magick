@@ -645,20 +645,69 @@ You can change variant weights at any time via the Admin UI or code, and changes
 
 #### Feature Dependencies
 
+A feature can require other features (its **prerequisites**) to be on. This is
+**evaluation-only**: a dependent feature evaluates as disabled while any
+prerequisite evaluates as disabled, and its own configured state is never
+touched — turn the prerequisite back on and the dependent feature evaluates as
+enabled again, with no re-toggling.
+
 ```ruby
-feature = Magick[:advanced_feature]
-feature.add_dependency(:base_feature)
-# advanced_feature can be enabled independently
-# However, base_feature (dependency) cannot be enabled if advanced_feature (main feature) is disabled
-# This ensures dependencies are only enabled when their parent features are enabled
+Magick[:advanced_feature].add_dependency(:base_feature)
 
-# Example:
-Magick[:advanced_feature].disable  # => true
-Magick[:base_feature].enable        # => false (cannot enable dependency when main feature is disabled)
+Magick[:advanced_feature].enable
+Magick[:base_feature].disable
+Magick[:advanced_feature].enabled?   # => false (prerequisite is off)
+Magick[:advanced_feature].get_value  # => true  (configured state is preserved)
 
-Magick[:advanced_feature].enable   # => true
-Magick[:base_feature].enable        # => true (now can enable dependency)
+Magick[:base_feature].enable
+Magick[:advanced_feature].enabled?   # => true
+
+Magick[:advanced_feature].remove_dependency(:base_feature)
+Magick[:advanced_feature].replace_dependencies(%i[base_feature auth])  # wholesale write
+Magick[:advanced_feature].dependencies  # => ["base_feature", "auth"]
 ```
+
+**Dependencies are persisted** under the feature's `dependencies` key, alongside
+its value and targeting. Adding or removing one writes to the backend, publishes
+cache invalidation, and records one audit entry plus one version — so every
+container sees the relationship, it survives a restart, and it travels through
+export/import and rollback.
+
+**Declared in code vs. stored.** `dependencies:` in the DSL is a declaration;
+the stored set is what evaluation uses.
+
+- The declaration seeds the stored set the first time it is seen.
+- Stored state wins after that, so a dependency added at runtime (console,
+  Admin UI, another container) is **not** erased by every process that boots
+  with the older declaration. A process that declares nothing never writes.
+- A declaration that *changed* since it was last recorded replaces the stored
+  set, so editing `dependencies:` in code takes effect on the next boot.
+  Deleting the declaration is not a change — remove the dependency explicitly
+  with `remove_dependency` / `replace_dependencies`.
+
+**Prerequisites that this process never declared** are resolved from the
+backend, so a worker that only registers `:advanced_feature` still evaluates
+`:base_feature` correctly.
+
+**Unknown prerequisites.** A prerequisite that is registered nowhere *and*
+absent from the backend is, by default, treated as **satisfied**: the
+dependent feature falls back to its own value and targeting, so a prerequisite
+that has not shipped yet (or a typo) cannot switch off features that are
+otherwise correctly configured. The name is reported on stderr once per
+process, so the condition is never silent. To fail closed instead:
+
+```ruby
+Magick.configure do
+  unknown_dependency_policy :unsatisfied   # dependent features stay off until the prerequisite exists
+end
+
+# or directly
+Magick.unknown_dependency_policy = :unsatisfied
+```
+
+A feature cannot depend on itself (`ArgumentError`), and a dependency cycle
+(`a -> b -> a`) evaluates as unsatisfied and is reported, rather than
+overflowing the stack.
 
 #### Export/Import
 

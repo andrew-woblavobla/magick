@@ -52,3 +52,22 @@ gem primitives. The gem ships no routes; paths and auth are the host app's.
 operation = one audit entry + one version snapshot, under its real action
 name (since 1.5.0). `replace_targeting` is one such operation regardless of
 how many rules changed.
+
+**Prerequisite (dependency)** — a feature named in another feature's
+`dependencies`. Evaluation-only: a dependent feature evaluates false while any
+prerequisite evaluates false, and nothing is ever written into the dependent
+feature's own state. Stored under the `dependencies` adapter key, so the
+relationship is shared across processes and survives restarts. Avoid: "parent
+feature", "cascade" (there is none).
+
+**Declared vs stored dependencies** — `dependencies:` in the DSL is the
+*declaration*; the `dependencies` adapter key is the *stored set* that
+evaluation uses. Stored state wins, so a dependency added at runtime is not
+erased by the next boot; a declaration that changed since it was last recorded
+(tracked under `declared_dependencies`) replaces the stored set.
+
+**Unknown prerequisite** — a prerequisite that is neither registered in this
+process nor present in the backend. Governed by
+`Magick.unknown_dependency_policy` (`:satisfied` default, `:unsatisfied` to
+fail closed) and reported on stderr once per process. A prerequisite that is
+merely *unregistered here* is not unknown — it is evaluated from stored state.

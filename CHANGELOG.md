@@ -192,6 +192,17 @@ archive stops rewriting everything already in it.
   inside a real Rails app. Now spelled `::Rails`. Hosts that subscribed to
   `magick.feature_flag.*` and saw nothing will start receiving events.
 
+- **Feature dependencies are persisted.** `add_dependency` / `remove_dependency`
+  mutated an in-process list that was never written to storage and never read
+  back on load, so a prerequisite relationship was invisible to every other
+  container and vanished on restart — and because an unknown prerequisite is
+  treated as satisfied, every other process went on serving the dependent
+  feature as live. Dependencies now live under the feature's `dependencies`
+  adapter key next to its value and targeting: writes go to the backend and
+  publish cache invalidation, loads restore them, and they survive export,
+  import and rollback. A prerequisite that this process never declared is
+  resolved from the shared backend rather than treated as unknown.
+
 ### Changes
 
 - **A non-callable `require_role` is rejected instead of ignored.**
@@ -226,6 +237,32 @@ archive stops rewriting everything already in it.
 - **`audit_log persist: false`** keeps the in-memory ring and any host-supplied
   adapter but writes nothing to Redis/ActiveRecord, for hosts whose own sink is
   the system of record.
+
+- **`Feature#replace_dependencies(list)`** — wholesale prerequisite write (the
+  list is the new set, `[]` clears it), recorded as one audit entry and one
+  version. `Magick.import` applies dependencies through it: a payload without a
+  `dependencies` key leaves stored prerequisites alone, an explicit list
+  (including `[]`) replaces them.
+
+- **`Magick.unknown_dependency_policy`** (`:satisfied` default, `:unsatisfied`;
+  also `unknown_dependency_policy :unsatisfied` in the configuration DSL) makes
+  the treatment of a prerequisite that exists neither in this process nor in the
+  backend explicit rather than incidental. Either way the name is reported on
+  stderr once per process, so the fail-open path is no longer silent.
+
+- **Declared vs stored dependencies.** `dependencies:` in the DSL seeds the
+  stored set; after that stored state wins, so a dependency added at runtime is
+  not erased by processes booting with the older declaration, and a process that
+  declares nothing never writes. A declaration that changed since it was last
+  recorded (tracked under the `declared_dependencies` key) replaces the stored
+  set, so editing `dependencies:` still takes effect on the next boot. Deleting
+  the declaration is not a change — remove the prerequisite explicitly.
+
+- **`add_dependency` on a prerequisite already present is a no-op** (no audit
+  entry, no version). A self-dependency raises `ArgumentError`, and a dependency
+  cycle evaluates as unsatisfied and is reported instead of raising
+  `SystemStackError` — which, not being a `StandardError`, escaped the fail-safe
+  rescue in `#enabled?`.
 
 ### Development
 

@@ -183,13 +183,67 @@ RSpec.describe Magick::ExportImport, 'round-trip' do
   it 'preserves feature dependencies' do
     Magick.register_feature(:parent)
     Magick.register_feature(:child)
-    Magick[:child].instance_variable_set(:@dependencies, ['parent'])
+    Magick[:child].add_dependency(:parent)
 
     exported = Magick::ExportImport.export(Magick.features)
     Magick.reset!
-    imported = Magick::ExportImport.import(exported, registry)
+    imported = Magick::ExportImport.import(exported, Magick.default_adapter_registry)
 
-    deps = imported['child'].instance_variable_get(:@dependencies) || []
-    expect(deps).to include('parent')
+    expect(imported['child'].dependencies).to eq(['parent'])
+  end
+
+  it 'persists imported dependencies to the backend' do
+    Magick.register_feature(:parent)
+    Magick.register_feature(:child)
+    Magick[:child].add_dependency(:parent)
+
+    exported = Magick::ExportImport.export(Magick.features)
+    Magick.reset!
+    target_registry = Magick.default_adapter_registry
+    Magick::ExportImport.import(exported, target_registry)
+
+    # A process that only reads the backend sees the imported relationship.
+    expect(Magick::Feature.new('child', target_registry).dependencies).to eq(['parent'])
+  end
+
+  it 'preserves dependencies through a JSON round trip' do
+    Magick.register_feature(:parent)
+    Magick.register_feature(:child)
+    Magick[:child].add_dependency(:parent)
+
+    json = Magick::ExportImport.export_json(Magick.features)
+    Magick.reset!
+    imported = Magick::ExportImport.import(json, Magick.default_adapter_registry)
+
+    expect(imported['child'].dependencies).to eq(['parent'])
+  end
+
+  it 'applies an explicit empty dependency list' do
+    Magick.register_feature(:child)
+    Magick[:child].add_dependency(:parent)
+    registry_before = Magick.adapter_registry || Magick.default_adapter_registry
+
+    payload = [{ name: 'child', type: 'boolean', default_value: false, dependencies: [] }]
+    Magick::ExportImport.import(payload, registry_before)
+
+    expect(Magick::Feature.new('child', registry_before).dependencies).to eq([])
+  end
+
+  it 'leaves stored dependencies alone when the payload omits them' do
+    Magick.register_feature(:child)
+    Magick[:child].add_dependency(:parent)
+    registry_before = Magick.adapter_registry || Magick.default_adapter_registry
+
+    Magick::ExportImport.import([{ name: 'child', type: 'boolean', default_value: false }], registry_before)
+
+    expect(Magick::Feature.new('child', registry_before).dependencies).to eq(['parent'])
+  end
+
+  it 'rejects a dependency payload that names the feature itself' do
+    Magick.register_feature(:child)
+    registry_before = Magick.adapter_registry || Magick.default_adapter_registry
+
+    expect { Magick::ExportImport.import([{ name: 'child', type: 'boolean', default_value: false, dependencies: ['child'] }], registry_before) }
+      .to raise_error(Magick::ExportImport::ImportError, /invalid dependencies/)
   end
 end

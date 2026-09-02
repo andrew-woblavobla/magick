@@ -136,6 +136,34 @@ RSpec.describe Magick::Adapters::Redis, 'integration', :redis, if: RedisSpecSupp
     end
   end
 
+  # Dependencies are stored state like any other, so a process that never
+  # declared the relationship must still evaluate it: the second registry here
+  # shares only Redis with the first.
+  it 'shares feature dependencies with a process that never declared them' do
+    r1 = Magick::Adapters::Registry.new(Magick::Adapters::Memory.new,
+                                        described_class.new(RedisSpecSupport.new_client))
+    r2 = Magick::Adapters::Registry.new(Magick::Adapters::Memory.new,
+                                        described_class.new(RedisSpecSupport.new_client))
+
+    begin
+      child = Magick::Feature.new(:child, r1)
+      child.add_dependency(:parent)
+      child.enable
+      Magick::Feature.new(:parent, r1).disable
+
+      child_elsewhere = Magick::Feature.new(:child, r2)
+      expect(child_elsewhere.dependencies).to eq(['parent'])
+      expect(child_elsewhere.get_value).to be true
+      expect(child_elsewhere.enabled?).to be false
+
+      Magick::Feature.new(:parent, r2).enable
+      expect(Magick::Feature.new(:child, r2).enabled?).to be true
+    ensure
+      r1.shutdown
+      r2.shutdown
+    end
+  end
+
   it 'publishes cache invalidation that a second registry observes' do
     memory1 = Magick::Adapters::Memory.new
     memory2 = Magick::Adapters::Memory.new

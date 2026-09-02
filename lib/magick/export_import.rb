@@ -65,7 +65,7 @@ module Magick
         apply_value(feature, feature_data)
         apply_targeting(feature, targeting)
         apply_variants(feature, feature_data, targeting)
-        apply_dependencies(feature, fetch(feature_data, :dependencies) || [])
+        apply_dependencies(feature, fetch(feature_data, :dependencies))
 
         features[name.to_s] = feature
       end
@@ -141,11 +141,15 @@ module Magick
       list.empty? ? feature.clear_variants : feature.set_variants(list)
     end
 
+    # A payload without a "dependencies" key leaves the feature's stored
+    # prerequisites alone; an explicit list (including []) replaces them, so an
+    # export taken after a dependency was removed re-applies that removal.
     def self.apply_dependencies(feature, deps)
-      list = Array(deps).map(&:to_s)
-      return if list.empty?
+      return if deps.nil?
 
-      feature.instance_variable_set(:@dependencies, list)
+      feature.replace_dependencies(deps)
+    rescue ArgumentError => e
+      raise ImportError, "Magick.import: invalid dependencies for '#{feature.name}': #{e.message}"
     end
   end
 end
