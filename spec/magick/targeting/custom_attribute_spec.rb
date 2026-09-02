@@ -2,6 +2,11 @@
 
 require 'spec_helper'
 
+# NOTE: this file exercises a Magick::Targeting::* strategy object. Nothing outside
+# lib/magick/targeting/ constructs these classes — Feature evaluates every rule inline,
+# so passing here says nothing about what a flag returns. Behavioural coverage of the
+# real evaluation path lives in spec/magick/targeting/evaluation_spec.rb. These specs
+# stay until the fate of the strategy classes is decided (audit-1-5-1 issue 01).
 RSpec.describe Magick::Targeting::CustomAttribute do
   describe 'equals / eq' do
     it 'matches when the context value is in the allowed set' do
