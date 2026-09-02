@@ -15,4 +15,6 @@ group :development, :test do
   # Optional dependencies for ActiveRecord adapter testing
   gem 'activerecord', '>= 6.0', '< 9.0', require: false
   gem 'sqlite3', '~> 2.0', require: false
+  # Optional dependency powering per-request caching of feature checks
+  gem 'request_store', '~> 1.5', require: false
 end

@@ -6,6 +6,7 @@ if defined?(Rails)
   # DSL is already loaded by magick.rb, but ensure it's available
   require 'magick/dsl' unless defined?(Magick::DSL)
   require_relative 'events'
+  require_relative '../request_store_integration'
   # Admin UI engine is now loaded in magick.rb when Rails is detected
 
   module Magick
@@ -120,8 +121,6 @@ if defined?(Rails)
 
         # Preload features in request store
         config.to_prepare do
-          RequestStore.store[:magick_features] ||= {} if defined?(RequestStore)
-
           # Restart background threads after Puma fork. ensure_*! is a no-op
           # when Process.pid matches the owner pid, so it is cheap to call.
           registry = Magick.adapter_registry
@@ -179,37 +178,14 @@ if defined?(Rails)
         @app.call(env)
       end
     end
-
-    # Request store integration
-    module RequestStoreIntegration
-      def self.included(base)
-        base.extend(ClassMethods)
-      end
-
-      module ClassMethods
-        def enabled?(feature_name, context = {})
-          # Check request store cache first
-          if defined?(RequestStore)
-            cache_key = "#{feature_name}:#{context.hash}"
-            cached = RequestStore.store[:magick_features]&.[](cache_key)
-            return cached unless cached.nil?
-          end
-
-          # Check feature
-          result = super(feature_name, context)
-
-          # Cache in request store
-          if defined?(RequestStore)
-            RequestStore.store[:magick_features] ||= {}
-            RequestStore.store[:magick_features][cache_key] = result
-          end
-
-          result
-        end
-      end
-    end
   end
 
-  # Extend Magick module with request store integration
-  Magick.extend(Magick::Rails::RequestStoreIntegration)
+  # Where this integration used to live. Kept so the old constant path resolves.
+  Magick::Rails::RequestStoreIntegration = Magick::RequestStoreIntegration
+
+  # Memoise `Magick.enabled?` for the duration of a request. Installed
+  # unconditionally: it stays inert until `RequestStore` is both loaded and
+  # inside a request, so it does not matter whether the optional
+  # `request_store` gem has been required by the time this file loads.
+  Magick::RequestStoreIntegration.install!
 end

@@ -476,6 +476,48 @@ class DashboardController < ApplicationController
 end
 ```
 
+### Per-Request Caching
+
+Add the optional [`request_store`](https://github.com/steveklabnik/request_store)
+gem and repeated checks of the same feature with the same context are evaluated
+once per request and reused:
+
+```ruby
+# Gemfile
+gem 'request_store'
+```
+
+```ruby
+# Evaluated once; the second and third calls reuse the answer.
+Magick.enabled?(:new_dashboard, user_id: current_user.id)
+Magick.enabled?(:new_dashboard, user_id: current_user.id)
+Magick.disabled?(:new_dashboard, user_id: current_user.id)
+```
+
+This matters most for `enable_percentage_of_requests`, which rolls a die on
+every check. Cached, the whole request gets one answer, so a page cannot render
+half of a rollout. The next request rolls again.
+
+The cache is keyed by feature name and context, lives in `RequestStore` and is
+cleared with it at the end of each request. It is only consulted inside a
+request — in a console, a rake task or at boot, checks are evaluated live,
+which is also what happens when `request_store` is not installed. If you change
+a feature mid-request and later call sites in that same request must see the
+new state, drop the memo:
+
+```ruby
+Magick::RequestStoreIntegration.clear!
+```
+
+Rails installs this for you. Elsewhere (a Sidekiq-only process, for example)
+wire it up yourself — `request_store` ships middleware for both Rack and
+Sidekiq:
+
+```ruby
+require 'magick/request_store_integration'
+Magick::RequestStoreIntegration.install!
+```
+
 ### Advanced Features
 
 #### A/B Testing (Experiments)

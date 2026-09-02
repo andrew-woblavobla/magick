@@ -27,4 +27,6 @@ Gem::Specification.new do |spec|
   # Optional dependencies for ActiveRecord adapter testing
   spec.add_development_dependency 'activerecord', '>= 6.0', '< 9.0'
   spec.add_development_dependency 'sqlite3', '~> 2.0'
+  # Optional dependency powering per-request caching of feature checks
+  spec.add_development_dependency 'request_store', '~> 1.5'
 end
