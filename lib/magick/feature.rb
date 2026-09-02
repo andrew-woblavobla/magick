@@ -8,6 +8,8 @@ module Magick
   class Feature
     VALID_TYPES = %i[boolean string number].freeze
     VALID_STATUSES = %i[active inactive deprecated].freeze
+    # What "off" means per feature type — the value #disable writes.
+    DISABLED_VALUES = { boolean: false, string: '', number: 0 }.freeze
 
     attr_reader :name, :type, :status, :default_value, :description, :display_name, :group, :adapter_registry,
                 :targeting
@@ -599,6 +601,11 @@ module Magick
     end
 
     def enable(user_id: nil)
+      # Validate the type BEFORE touching anything: a caller that catches this
+      # must be able to rely on targeting and the stored value being untouched,
+      # in this process and in the backend.
+      validate_enableable!
+
       changes = { value: { from: @stored_value, to: true }, targeting: { cleared: true } }
 
       record_change('enable', changes, user_id: user_id) do
@@ -606,16 +613,7 @@ module Magick
         @targeting = {}
         save_targeting
 
-        case type
-        when :boolean
-          set_value(true, user_id: user_id)
-        when :string
-          raise InvalidFeatureValueError, 'Cannot enable string feature. Use set_value instead.'
-        when :number
-          raise InvalidFeatureValueError, 'Cannot enable number feature. Use set_value instead.'
-        else
-          raise InvalidFeatureValueError, "Cannot enable feature of type #{type}"
-        end
+        set_value(true, user_id: user_id)
 
         # Rails 8+ event
         if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
@@ -627,7 +625,11 @@ module Magick
     end
 
     def disable(user_id: nil)
-      disabled_value = { boolean: false, string: '', number: 0 }[type]
+      # Same contract as #enable: nothing is cleared or written unless the whole
+      # operation can go through.
+      disabled_value = DISABLED_VALUES.fetch(type) do
+        raise InvalidFeatureValueError, "Cannot disable feature of type #{type}"
+      end
       changes = { value: { from: @stored_value, to: disabled_value }, targeting: { cleared: true } }
 
       record_change('disable', changes, user_id: user_id) do
@@ -635,16 +637,7 @@ module Magick
         @targeting = {}
         save_targeting
 
-        case type
-        when :boolean
-          set_value(false, user_id: user_id)
-        when :string
-          set_value('', user_id: user_id)
-        when :number
-          set_value(0, user_id: user_id)
-        else
-          raise InvalidFeatureValueError, "Cannot disable feature of type #{type}"
-        end
+        set_value(disabled_value, user_id: user_id)
 
         # Ensure registered feature instance also has targeting cleared
         if Magick.features.key?(name)
@@ -1353,6 +1346,22 @@ module Magick
           raise InvalidFeatureValueError,
                 'Default value must be numeric for type :number'
         end
+      end
+    end
+
+    # Only a boolean feature has a meaningful "on": a string or number feature
+    # carries a value, so enabling it is meaningless. Called before #enable
+    # touches any state, so the raise leaves the feature exactly as it was.
+    def validate_enableable!
+      case type
+      when :boolean
+        nil
+      when :string
+        raise InvalidFeatureValueError, 'Cannot enable string feature. Use set_value instead.'
+      when :number
+        raise InvalidFeatureValueError, 'Cannot enable number feature. Use set_value instead.'
+      else
+        raise InvalidFeatureValueError, "Cannot enable feature of type #{type}"
       end
     end
 

@@ -195,6 +195,44 @@ feature.enable_for_ip_addresses('192.168.1.0/24', '10.0.0.1')
 feature.enable_for_custom_attribute(:subscription_tier, ['premium', 'enterprise'])
 ```
 
+### Global Toggles and Bulk Toggles
+
+`enable` and `disable` are the global switches: they set the feature's value
+**and** clear its targeting, so a flag that was on for one specific user is off
+for that user too once it has been disabled.
+
+Both are all-or-nothing. Only a boolean feature has an "on", and calling
+`enable` on a string or number feature raises without having changed or
+persisted anything:
+
+```ruby
+Magick[:api_version].enable_for_user(123)
+
+Magick[:api_version].enable
+# => Magick::InvalidFeatureValueError: Cannot enable string feature. Use set_value instead.
+
+Magick[:api_version].targeting # => { user: ["123"] } — untouched, in memory and in the backend
+```
+
+`Magick.bulk_enable` and `Magick.bulk_disable` apply exactly those semantics to
+a list of features. They return a `Magick::BulkResult`, which iterates as the
+array of features it was handed and names anything it could not act on:
+
+```ruby
+result = Magick.bulk_disable(%i[checkout new_dashboard api_version])
+result.complete?       # => true — every feature type has an "off"
+result.map(&:name)     # => ["checkout", "new_dashboard", "api_version"]
+
+result = Magick.bulk_enable(%i[checkout api_version])
+result.complete?       # => false
+result.changed         # => [#<Magick::Feature checkout>]
+result.skipped         # => [#<Magick::Feature api_version>]
+result.skipped_reasons # => { "api_version" => "cannot enable a string feature; use set_value" }
+```
+
+A bulk call still acts on every feature it can; `skipped_reasons` is how you
+tell a partial run from a complete one.
+
 ### Wire Targeting Payload (control-plane APIs)
 
 For building flag-management endpoints on top of the gem (an internal panel,

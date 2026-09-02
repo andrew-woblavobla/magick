@@ -24,6 +24,7 @@ require_relative 'magick/targeting/custom_attribute'
 require_relative 'magick/targeting/complex'
 require_relative 'magick/errors'
 require_relative 'magick/targeting_payload'
+require_relative 'magick/bulk_result'
 
 require_relative 'magick/log_safe'
 require_relative 'magick/audit_log'
@@ -178,20 +179,25 @@ module Magick
       features.key?(feature_name.to_s) || (adapter_registry || default_adapter_registry).exists?(feature_name)
     end
 
+    # Enable every named feature globally, with the same semantics as
+    # Feature#enable: value true AND targeting cleared. Only a boolean feature
+    # has an "on"; a string or number one is left untouched and named in the
+    # result rather than silently passed over. Returns a BulkResult, which
+    # still iterates as the array of features this used to return.
     def bulk_enable(feature_names, _context = {})
-      feature_names.map do |name|
-        feature = features[name.to_s] || self[name]
-        feature.set_value(true) if feature.type == :boolean
-        feature
+      bulk_toggle(feature_names) do |feature|
+        next "cannot enable a #{feature.type} feature; use set_value" unless feature.type == :boolean
+
+        feature.enable
       end
     end
 
+    # Disable every named feature globally, with the same semantics as
+    # Feature#disable: the off value for the feature's type AND targeting
+    # cleared, so a flag that was enabled for one user is off for that user
+    # too. Every feature type has an "off", so nothing is skipped.
     def bulk_disable(feature_names, _context = {})
-      feature_names.map do |name|
-        feature = features[name.to_s] || self[name]
-        feature.set_value(false) if feature.type == :boolean
-        feature
-      end
+      bulk_toggle(feature_names, &:disable)
     end
 
     def export(format: :json)
@@ -368,6 +374,17 @@ module Magick
     end
 
     private
+
+    # Shared body of the bulk toggles. The block acts on one feature; it
+    # returns the reason it did not act, or anything else if it did.
+    def bulk_toggle(feature_names)
+      targets = feature_names.map { |name| features[name.to_s] || self[name] }
+      skipped_reasons = targets.to_h { |feature| [feature.name, yield(feature)] }
+                               .select { |_name, reason| reason.is_a?(String) }
+      changed = targets.reject { |feature| skipped_reasons.key?(feature.name) }
+
+      BulkResult.new(targets, changed, skipped_reasons)
+    end
 
     # Run a cleanup action on a collaborator, swallowing errors so that
     # shutdown hooks (at_exit, Rails) never raise.
