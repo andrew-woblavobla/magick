@@ -105,6 +105,29 @@ if defined?(::ActiveRecord::Base)
       expect(registry.exists?(:av_demo)).to be false
     end
 
+    it 'reads a 1.5.0 archive and numbers above it, counter or no counter' do
+      # 1.5.0 wrote version_<n> keys with no sequence counter beside them, and
+      # its hot window did not survive the upgrade.
+      store = "#{described_class::STORE_PREFIX}av_demo"
+      (1..5).each do |number|
+        ar_adapter.set(store, "version_#{number}", {
+                         version: number,
+                         feature_data: { name: 'av_demo', value: number.odd?, targeting: {} },
+                         timestamp: Time.now.iso8601,
+                         created_by: nil,
+                         action: 'set_value'
+                       })
+      end
+
+      fresh = described_class.new(
+        Magick::Adapters::Registry.new(Magick::Adapters::Memory.new, nil, active_record_adapter: ar_adapter),
+        max_versions: 3
+      )
+
+      expect(fresh.get_versions(:av_demo, all: true).map(&:version)).to eq([1, 2, 3, 4, 5])
+      expect(fresh.save_version(:av_demo).version).to eq(6)
+    end
+
     it 'continues numbering from the archive after memory is wiped (restart)' do
       Magick.versioning = versioning
       Magick[:av_demo].set_value(true)

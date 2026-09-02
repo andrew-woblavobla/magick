@@ -12,6 +12,21 @@ module Magick
     # deleting a feature does not destroy its ActiveRecord archive row.
     STORE_PREFIX = '__magick_versions:'
 
+    # One store key per snapshot. Appending writes only its own key, so two
+    # containers saving at the same time interleave into one history instead of
+    # each rewriting the whole list over the other's entries.
+    VERSION_KEY_PREFIX = 'version_'
+    VERSION_KEY_PATTERN = /\A#{VERSION_KEY_PREFIX}(\d+)\z/.freeze
+
+    # The shared counter that hands out version numbers. Stored next to the
+    # snapshots under a key VERSION_KEY_PATTERN deliberately does not match.
+    SEQUENCE_KEY = 'sequence'
+
+    # 1.5.0 wrote the whole hot window as a single JSON list under this key.
+    # Still read (and migrated forward on the next append) so history written
+    # before the upgrade stays visible.
+    LEGACY_WINDOW_KEY = 'versions'
+
     class Version
       attr_reader :version, :feature_data, :timestamp, :created_by, :action
 
@@ -37,10 +52,6 @@ module Magick
     def initialize(adapter_registry, max_versions: DEFAULT_MAX_VERSIONS)
       @adapter_registry = adapter_registry
       @max_versions = max_versions.to_i.positive? ? max_versions.to_i : DEFAULT_MAX_VERSIONS
-      # Process-local cache of the hot window, rehydrated lazily from the
-      # adapters so history survives restarts and is shared across containers.
-      @hot = {}
-      @mutex = Mutex.new
     end
 
     attr_reader :max_versions
@@ -63,11 +74,10 @@ module Magick
     # merges the unlimited ActiveRecord archive when one is configured.
     def get_versions(feature_name, all: false)
       name = feature_name.to_s
-      hot = @mutex.synchronize { hot_window(name).dup }
-      return hot unless all
+      hot = hot_entries(name)
+      return sorted(hot).last(@max_versions) unless all
 
-      older = archive_versions(name).reject { |a| hot.any? { |h| h.version == a.version } }
-      (older + hot).sort_by(&:version)
+      sorted(hot.merge(archive_entries(name)))
     end
 
     # Restore the feature to the snapshot stored in the given version, then
@@ -102,17 +112,19 @@ module Magick
       deep_symbolize(JSON.parse(JSON.generate(feature.to_h)))
     end
 
+    # Every append re-reads the current history from the store. Nothing is
+    # memoized for the process lifetime: a window cached on first read is
+    # exactly what let two containers renumber and overwrite each other's
+    # snapshots in 1.5.0.
     def append(name, snapshot, version: nil, created_by: nil, action: nil)
-      entry = @mutex.synchronize do
-        window = hot_window(name)
-        resolved = version || (window.last ? window.last.version + 1 : 1)
-        record = Version.new(resolved, snapshot, created_by: created_by, action: action)
-        window << record
-        window.shift while window.size > @max_versions
-        persist_hot_window(name, window)
-        persist_archive(name, record)
-        record
-      end
+      stored = hot_store_data(name)
+      history = stored.values.each_with_object({}) { |data, all| all.merge!(entries_in(data)) }
+      migrate_legacy_window(name, stored)
+
+      number = version ? version.to_i : allocate_version_number(name, history)
+      entry = Version.new(number, snapshot, created_by: created_by, action: action)
+      persist(name, entry)
+      prune_hot_window(name, history.keys, number)
 
       if defined?(Magick::Rails::Events) && Magick::Rails::Events.rails8?
         Magick::Rails::Events.version_saved(name, version: entry.version, created_by: created_by)
@@ -121,73 +133,177 @@ module Magick
       entry
     end
 
-    # Callers must hold @mutex.
-    def hot_window(name)
-      @hot[name] ||= load_hot_window(name)
+    # The shared store allocates the number, so two processes appending at the
+    # same time can never be handed the same one. The floor is the highest
+    # number this process can see: a store whose counter is missing (upgrade
+    # from 1.5.0, Redis flush, restored dump) resumes above the surviving
+    # history instead of restarting at 1 and overwriting it.
+    def allocate_version_number(name, history)
+      adapter = sequence_adapter
+      floor = highest_known_version(name, history, adapter)
+      return floor + 1 unless adapter
+
+      number = safely { adapter.next_sequence(store_name(name), SEQUENCE_KEY, floor: floor) }.to_i
+      return number if number > floor
+
+      # No usable allocator (adapter down, or a custom one that does not
+      # implement the primitive). Fall back to local numbering — which is what
+      # 1.5.0 always did — rather than dropping the snapshot.
+      floor + 1
     end
 
-    def load_hot_window(name)
-      raw = read_hot_list(name)
-      raw = read_archive_tail(name) if raw.nil? || raw.empty?
-      Array(raw).filter_map { |h| rehydrate(h) }.sort_by(&:version).last(@max_versions)
+    def highest_known_version(name, history, adapter)
+      floor = history.keys.max.to_i
+      return floor if adapter.nil?
+      return floor unless safely { adapter.get(store_name(name), SEQUENCE_KEY) }.nil?
+
+      # First allocation against this store, so the counter is about to be
+      # seeded: look at the archive too, which may hold far higher numbers than
+      # the hot window that survived.
+      [floor, archive_high_water(name)].max
     end
 
-    def read_hot_list(name)
+    def persist(name, entry)
+      payload = entry.to_h
+      key = version_key(entry.version)
+      hot_adapters.each { |adapter| safely { adapter.set(store_name(name), key, payload) } }
+      archive = archive_adapter
+      safely { archive.set(store_name(name), key, payload) } if archive
+    end
+
+    # Retention for the hot window, keyed off the number just allocated rather
+    # than off a count of what this process happened to read, so appends racing
+    # from several processes agree on what to drop.
+    def prune_hot_window(name, known_numbers, allocated)
+      threshold = allocated - @max_versions
+      return if threshold < 1
+
+      stale = known_numbers.select { |number| number <= threshold }
+      return if stale.empty?
+
       hot_adapters.each do |adapter|
-        list = safely { adapter.get(store_name(name), 'versions') }
-        list = parse_json(list) if list.is_a?(String)
-        return list if list.is_a?(Array) && !list.empty?
-      end
-      nil
-    end
-
-    # Seed the hot window from the archive when memory/Redis are empty
-    # (fresh boot, Redis flush) so version numbering continues, not restarts.
-    def read_archive_tail(name)
-      adapter = archive_adapter
-      return nil unless adapter
-
-      data = safely { adapter.get_all_data(store_name(name)) }
-      return nil unless data.is_a?(Hash)
-
-      data.filter_map { |key, value| value if key.to_s.start_with?('version_') }
-    end
-
-    def archive_versions(name)
-      adapter = archive_adapter
-      return [] unless adapter
-
-      data = safely { adapter.get_all_data(store_name(name)) }
-      return [] unless data.is_a?(Hash)
-
-      data.filter_map { |key, value| rehydrate(value) if key.to_s.start_with?('version_') }.sort_by(&:version)
-    end
-
-    def persist_hot_window(name, window)
-      payload = window.map(&:to_h)
-      hot_adapters.each do |adapter|
-        safely { adapter.set(store_name(name), 'versions', payload) }
+        stale.each { |number| safely { adapter.delete_key(store_name(name), version_key(number)) } }
       end
     end
 
-    def persist_archive(name, entry)
-      adapter = archive_adapter
-      return unless adapter
+    # One-time forward migration of the 1.5.0 single-blob window into one key
+    # per version, so pre-upgrade snapshots take part in retention and are read
+    # the same way everywhere. Idempotent: entries are keyed by their own
+    # version number, and the blob is emptied once they have been written.
+    def migrate_legacy_window(name, stored)
+      stored.each do |adapter, data|
+        legacy = legacy_entries(data)
+        next if legacy.empty?
 
-      safely { adapter.set(store_name(name), "version_#{entry.version}", entry.to_h) }
+        legacy.each_value do |entry|
+          safely { adapter.set(store_name(name), version_key(entry.version), entry.to_h) }
+        end
+        safely { adapter.set(store_name(name), LEGACY_WINDOW_KEY, []) }
+      end
     end
 
+    # Current history, keyed by version number. The memory adapter is a
+    # per-process cache holding only what this process wrote, so it is never the
+    # whole story: Redis is the shared hot window when one is configured, and
+    # without Redis the archive is the only place another container's snapshots
+    # can be found, so it backs the window too. Also used when the hot store is
+    # empty (fresh boot, Redis flush) so history survives a restart.
+    def hot_entries(name)
+      entries = {}
+      hot_store_data(name).each_value { |data| entries.merge!(entries_in(data)) }
+      return entries if shared_hot_adapter && !entries.empty?
+
+      entries.merge(archive_entries(name))
+    end
+
+    # Redis, when configured: the one hot-window store every process reads.
+    def shared_hot_adapter
+      registry = @adapter_registry
+      registry.respond_to?(:redis_adapter) ? registry.redis_adapter : nil
+    end
+
+    # Weakest source first: the process-local memory cache loses to Redis, and
+    # both lose to the archive, so a version number resolves to the same
+    # snapshot no matter which process is asked.
+    def hot_store_data(name)
+      hot_adapters.to_h { |adapter| [adapter, adapter_data(adapter, name)] }
+    end
+
+    def archive_entries(name)
+      adapter = archive_adapter
+      return {} unless adapter
+
+      entries_in(adapter_data(adapter, name))
+    end
+
+    # Highest archived number, read from the keys alone: rehydrating an
+    # unlimited archive just to find its maximum would be wasteful.
+    def archive_high_water(name)
+      adapter = archive_adapter
+      return 0 unless adapter
+
+      numbers = adapter_data(adapter, name).keys.filter_map do |key|
+        match = VERSION_KEY_PATTERN.match(key.to_s)
+        match && match[1].to_i
+      end
+      numbers.max.to_i
+    end
+
+    def adapter_data(adapter, name)
+      data = safely { adapter.get_all_data(store_name(name)) }
+      data.is_a?(Hash) ? data : {}
+    end
+
+    # Version entries held in one already-read blob of store data, keyed by
+    # version number. Legacy list entries are read first so a per-version key
+    # written by this release wins over a stale copy inside the 1.5.0 blob.
+    def entries_in(data)
+      entries = legacy_entries(data)
+      data.each do |key, value|
+        next unless VERSION_KEY_PATTERN.match?(key.to_s)
+
+        entry = rehydrate(value)
+        entries[entry.version] = entry if entry
+      end
+      entries
+    end
+
+    def legacy_entries(data)
+      raw = data[LEGACY_WINDOW_KEY] || data[LEGACY_WINDOW_KEY.to_sym]
+      raw = parse_json(raw) if raw.is_a?(String)
+      return {} unless raw.is_a?(Array)
+
+      raw.each_with_object({}) do |item, entries|
+        entry = rehydrate(item)
+        entries[entry.version] = entry if entry
+      end
+    end
+
+    def sorted(entries)
+      entries.values.sort_by(&:version)
+    end
+
+    # Read the snapshot for one number, most authoritative source first, so
+    # every process resolves the same number to the same snapshot.
     def find_version(feature_name, version)
       name = feature_name.to_s
-      hot = @mutex.synchronize { hot_window(name).dup }
-      found = hot.find { |v| v.version == version }
-      return found if found
+      number = version.to_i
+      return nil unless number.positive?
 
-      adapter = archive_adapter
-      return nil unless adapter
+      adapters_by_authority.each do |adapter|
+        raw = safely { adapter.get(store_name(name), version_key(number)) }
+        entry = raw && rehydrate(raw)
+        return entry if entry
+      end
 
-      raw = safely { adapter.get(store_name(name), "version_#{version}") }
-      raw ? rehydrate(raw) : nil
+      # Written before the per-version layout (1.5.0 blob).
+      hot_entries(name)[number]
+    end
+
+    # Most authoritative source first: the durable archive, then the shared hot
+    # store, then this process's own memory cache.
+    def adapters_by_authority
+      ([archive_adapter] + hot_adapters.reverse).compact
     end
 
     # Hot window lives in memory + Redis (capped); the ActiveRecord adapter
@@ -206,8 +322,24 @@ module Magick
       registry.respond_to?(:active_record_adapter) ? registry.active_record_adapter : nil
     end
 
+    # A counter needs exactly one authority, so this picks a single adapter
+    # instead of fanning out like writes do. ActiveRecord first: its counter
+    # lives in the same row as the archive it numbers and so can never fall
+    # behind it; then Redis; then, with no shared backend configured at all,
+    # this process's own memory.
+    def sequence_adapter
+      registry = @adapter_registry
+      return registry unless registry.respond_to?(:memory_adapter)
+
+      registry.active_record_adapter || registry.redis_adapter || registry.memory_adapter
+    end
+
     def store_name(name)
       "#{STORE_PREFIX}#{name}"
+    end
+
+    def version_key(number)
+      "#{VERSION_KEY_PREFIX}#{number}"
     end
 
     def rehydrate(raw)
@@ -215,15 +347,20 @@ module Magick
       return nil unless raw.is_a?(Hash)
 
       data = deep_symbolize(raw)
-      timestamp = data[:timestamp]
-      timestamp = safely { Time.parse(timestamp) } if timestamp.is_a?(String)
+      number = data[:version].respond_to?(:to_i) ? data[:version].to_i : 0
+      return nil unless number.positive?
+
       Version.new(
-        data[:version],
+        number,
         data[:feature_data] || {},
         created_by: data[:created_by],
         action: data[:action],
-        timestamp: timestamp
+        timestamp: parse_timestamp(data[:timestamp])
       )
+    end
+
+    def parse_timestamp(value)
+      value.is_a?(String) ? safely { Time.parse(value) } : value
     end
 
     def parse_json(str)
@@ -244,10 +381,12 @@ module Magick
     end
 
     # Version bookkeeping is best-effort: a flaky adapter must never turn a
-    # feature toggle into an exception.
+    # feature toggle into an exception. NotImplementedError is caught too — it
+    # is what a custom adapter raises for primitives it has not implemented
+    # (#delete_key, #next_sequence), and it is not a StandardError.
     def safely
       yield
-    rescue StandardError
+    rescue StandardError, NotImplementedError
       nil
     end
   end

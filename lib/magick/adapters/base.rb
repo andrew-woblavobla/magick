@@ -41,6 +41,33 @@ module Magick
         raise NotImplementedError,
               "#{self.class} must implement #set_all_data (feature=#{feature_name}, keys=#{data_hash.keys.inspect})"
       end
+
+      # Remove a single key from a feature's data, leaving the rest intact.
+      # Subclasses MUST implement this — there is no way to express "delete one
+      # key" in terms of the other primitives, and retention (pruning the
+      # version history hot window) depends on it.
+      def delete_key(feature_name, key)
+        raise NotImplementedError,
+              "#{self.class} must implement #delete_key (feature=#{feature_name}, key=#{key})"
+      end
+
+      # Atomically allocate the next number in a monotonic counter stored under
+      # (feature_name, key) and return it. The result is always greater than
+      # both the stored value and +floor+; callers pass the highest number they
+      # can already see as +floor+ so a store that lost its counter (Redis
+      # flush, restored dump, upgrade from a release that had none) resumes
+      # above the surviving data instead of restarting at 1 and overwriting it.
+      #
+      # Adapters backed by a store SHARED BETWEEN PROCESSES must override this
+      # with a genuinely atomic primitive (Redis HINCRBY, a row lock, a database
+      # sequence). This default is a plain read-modify-write: it is correct for
+      # a store only one process can reach, and will hand the same number to two
+      # processes that call it concurrently.
+      def next_sequence(feature_name, key, floor: 0)
+        value = [get(feature_name, key).to_i, floor.to_i].max + 1
+        set(feature_name, key, value)
+        value
+      end
     end
   end
 end

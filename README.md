@@ -715,6 +715,27 @@ Magick.configure do
 end
 ```
 
+**Version numbers come from the shared store**, not from any one process. Each
+snapshot is stored under its own `version_<n>` key inside the reserved
+`__magick_versions:<name>` namespace, and the number is allocated by an atomic
+counter next to it — a row-locked `UPDATE` on the ActiveRecord row when that
+adapter is configured, otherwise Redis `HSETNX` + `HINCRBY`. Every append
+re-reads the current history rather than trusting a window cached at boot.
+
+That is what makes history correct across containers: two processes saving at
+the same time interleave into one list, neither loses a snapshot, and
+`rollback(name, 2)` restores the same state whichever process serves the
+request. Only with no shared backend at all (memory-only, single process) is
+the counter process-local.
+
+**Custom adapters:** an adapter used with versioning should implement
+`#next_sequence(feature_name, key, floor:)` and `#delete_key(feature_name, key)`
+in addition to the usual read/write methods. `Magick::Adapters::Base` ships a
+read-modify-write `#next_sequence` that is correct for a store only one process
+can reach; an adapter backed by a store **shared between processes** must
+override it with something genuinely atomic, or two processes will be handed the
+same version number. Without `#delete_key`, the hot window is never pruned.
+
 **Attribution:** wrap changes in `Magick.with_actor` to stamp audit entries
 (`user_id`) and versions (`created_by`):
 

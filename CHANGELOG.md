@@ -33,6 +33,37 @@ All notable changes to `magick-feature-flags` are documented in this file.
   shutting down a registry with a live Redis subscription raised. The guards now
   use `next`.
 
+- **Version numbers are allocated by the shared store.** Version history
+  clobbered itself across processes — two containers over one shared backend
+  destroyed each other's snapshots and disagreed about what a version number
+  contained. The next number now comes from an atomic counter kept beside the
+  history — a row-locked update on the ActiveRecord row, or Redis `HSETNX` +
+  `HINCRBY` — instead of being computed from a window each process memoized on
+  first read and never re-read. Two processes appending at the same time can no
+  longer be handed the same number.
+
+- **Every append re-reads the current history.** The process-local hot-window
+  cache is gone; reads and appends both go to the store.
+
+- **One store key per snapshot.** The hot window is now written as
+  `version_<n>` keys (the layout the ActiveRecord archive already used) rather
+  than as a single `versions` list that every append rewrote wholesale. An
+  append no longer overwrites entries another process wrote in between, and the
+  archive is no longer clobbered by a locally-computed number colliding with
+  one already in use.
+
+- **Reads prefer the shared store.** Where memory, Redis and the archive
+  disagree about a number (only possible for history written before this
+  change), the durable shared copy wins, so a version resolves to the same
+  snapshot in every process. With no Redis configured, the archive also backs
+  the hot window — the memory adapter only ever holds what its own process
+  wrote.
+
+- **Version counters resume above surviving history.** A store whose counter is
+  missing (upgrade, Redis flush, restored dump) is seeded from the highest
+  number still visible, including the archive, instead of restarting at 1 over
+  existing snapshots.
+
 ### Changes
 
 - **A non-callable `require_role` is rejected instead of ignored.**
@@ -43,6 +74,16 @@ All notable changes to `magick-feature-flags` are documented in this file.
   hook that reaches the config another way denies the request. Leaving
   `require_role` nil still permits access, so hosts gating at the router are
   unaffected.
+
+- **New adapter primitives.** `Magick::Adapters::Base` gains
+  `#next_sequence(feature_name, key, floor:)` and
+  `#delete_key(feature_name, key)`, implemented atomically by the memory, Redis
+  and ActiveRecord adapters and exposed on the registry. Custom adapters
+  backed by a store shared between processes must override `#next_sequence`;
+  the inherited default is a read-modify-write, correct only for a store one
+  process can reach. Version bookkeeping treats both as best-effort, so an
+  adapter that implements neither still records versions — with per-process
+  numbering and an unpruned hot window, as before.
 
 ### Development
 
@@ -56,6 +97,14 @@ All notable changes to `magick-feature-flags` are documented in this file.
   is asserted on every route the engine exposes rather than on a setting that
   merely round-trips. `actionpack`, `actionview`, `railties` and `rack-test`
   are development dependencies; the specs skip when they are absent.
+
+### Upgrading
+
+- **Version history written by 1.5.0 stays readable.** The old single-list
+  window is still read, and the first append after the upgrade migrates its
+  entries to `version_<n>` keys and continues numbering above them. Nothing to
+  run by hand. During a rolling deploy, processes still on the old code keep
+  numbering locally, so finish the rollout before relying on the guarantee.
 
 ## 1.6.0 — 2026-08-05
 

@@ -43,6 +43,71 @@ RSpec.describe Magick::Adapters::Redis, 'integration', :redis, if: RedisSpecSupp
     expect(adapter.exists?(:gone)).to be false
   end
 
+  it 'removes a single hash field without touching the rest' do
+    adapter.set(:multi, 'a', 1)
+    adapter.set(:multi, 'b', 2)
+
+    expect(adapter.delete_key(:multi, 'a')).to be true
+    expect(adapter.get_all_data(:multi).keys).to eq(['b'])
+    expect(adapter.delete_key(:multi, 'a')).to be false
+  end
+
+  describe '#next_sequence' do
+    it 'hands out increasing numbers starting above the floor' do
+      expect(adapter.next_sequence(:seq, 'sequence')).to eq(1)
+      expect(adapter.next_sequence(:seq, 'sequence')).to eq(2)
+    end
+
+    it 'seeds a missing counter from the floor instead of restarting at 1' do
+      expect(adapter.next_sequence(:seq, 'sequence', floor: 7)).to eq(8)
+    end
+
+    it 'jumps a counter that trails the floor past it' do
+      adapter.next_sequence(:seq, 'sequence') # counter is now 1
+      expect(adapter.next_sequence(:seq, 'sequence', floor: 20)).to be > 20
+    end
+
+    it 'never hands the same number to two clients of the same Redis' do
+      clients = 4.times.map { described_class.new(RedisSpecSupport.new_client) }
+      numbers = clients.flat_map do |client|
+        Array.new(10) { Thread.new { client.next_sequence(:seq, 'sequence') } }
+      end.map(&:value)
+
+      expect(numbers.uniq.size).to eq(40)
+      expect(numbers.sort).to eq((1..40).to_a)
+    end
+  end
+
+  describe 'version history across processes' do
+    it 'interleaves two containers into one history with no lost snapshots' do
+      containers = 2.times.map do
+        registry = Magick::Adapters::Registry.new(
+          Magick::Adapters::Memory.new,
+          described_class.new(RedisSpecSupport.new_client)
+        )
+        [registry, Magick::Versioning.new(registry)]
+      end
+
+      Magick.register_feature(:redis_versioned)
+      feature = Magick.features['redis_versioned']
+
+      3.times do |i|
+        containers.each_with_index do |(_registry, versioning), container|
+          versioning.record_change(feature, action: 'x', snapshot: { marker: "#{container}-#{i}" })
+        end
+      end
+
+      views = containers.map do |_registry, versioning|
+        versioning.get_versions(:redis_versioned).map { |v| [v.version, v.feature_data[:marker]] }
+      end
+
+      expect(views.first.map(&:first)).to eq((1..6).to_a)
+      expect(views.last).to eq(views.first)
+    ensure
+      containers&.each { |registry, _versioning| registry.shutdown }
+    end
+  end
+
   it 'publishes cache invalidation that a second registry observes' do
     memory1 = Magick::Adapters::Memory.new
     memory2 = Magick::Adapters::Memory.new

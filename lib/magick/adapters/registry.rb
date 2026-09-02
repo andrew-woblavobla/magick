@@ -321,6 +321,33 @@ module Magick
         end
       end
 
+      # Remove one key from a feature across every configured layer.
+      def delete_key(feature_name, key)
+        deleted = false
+        [memory_adapter, redis_adapter, active_record_adapter].compact.each do |adapter|
+          deleted = true if safely_delete_key(adapter, feature_name, key)
+        end
+        record_local_write(feature_name)
+        deleted
+      end
+
+      # Allocate a number from a shared counter. Unlike #set this deliberately
+      # does NOT fan out to every layer: a counter must have exactly one
+      # authority, or two processes reading different layers would be handed the
+      # same number. ActiveRecord is preferred (durable, row-locked), then
+      # Redis (atomic HINCRBY), then this process's memory as a last resort.
+      def next_sequence(feature_name, key, floor: 0)
+        [active_record_adapter, redis_adapter, memory_adapter].compact.each do |adapter|
+          value = begin
+            adapter.next_sequence(feature_name, key, floor: floor)
+          rescue StandardError, AdapterError, NotImplementedError
+            nil
+          end
+          return value if value
+        end
+        nil
+      end
+
       # Explicitly trigger cache invalidation for a feature
       # This is useful for targeting updates that need immediate cache invalidation
       # Invalidates memory cache in current process AND publishes to Redis for other processes
@@ -366,6 +393,12 @@ module Magick
       private
 
       attr_reader :circuit_breaker
+
+      def safely_delete_key(adapter, feature_name, key)
+        adapter.delete_key(feature_name, key)
+      rescue StandardError, AdapterError, NotImplementedError
+        false
+      end
 
       # Signal the subscribe loop to return, then close the connection so any
       # retry/reconnect attempt fails fast instead of sleeping for 5s.

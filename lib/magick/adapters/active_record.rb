@@ -140,7 +140,61 @@ module Magick
         end
       end
 
+      def delete_key(feature_name, key)
+        with_retries('delete key') do
+          @model_class.transaction do
+            record = @model_class.lock.find_by(feature_name: feature_name.to_s)
+            data = record&.data || {}
+            next false unless data.is_a?(Hash) && data.key?(key.to_s)
+
+            record.update!(data: data.except(key.to_s), updated_at: current_time)
+            true
+          end
+        end
+      end
+
+      # Server-side allocation. The read, the bump and the write happen inside
+      # one transaction holding the row lock, so two processes sharing the
+      # database are serialized and can never be handed the same number. The
+      # counter lives in the same row as the archive it numbers, which is why it
+      # can never fall behind snapshots that survived a Redis flush.
+      def next_sequence(feature_name, key, floor: 0)
+        with_retries('allocate sequence') do
+          @model_class.transaction do
+            record = @model_class.lock.find_or_create_by!(feature_name: feature_name.to_s)
+            data = record.data || {}
+            data = {} unless data.is_a?(Hash)
+            value = [data[key.to_s].to_i, floor.to_i].max + 1
+            record.update!(data: data.merge(key.to_s => value), updated_at: current_time)
+            value
+          end
+        end
+      end
+
       private
+
+      def current_time
+        defined?(Time.current) ? Time.current : Time.now
+      end
+
+      # SQLite reports concurrent writers as busy/locked rather than blocking;
+      # retry with linear backoff before surfacing the failure.
+      def with_retries(operation)
+        retries = 5
+        begin
+          yield
+        rescue ::ActiveRecord::StatementInvalid, ::ActiveRecord::ConnectionTimeoutError => e
+          if (e.message.include?('database is locked') || e.message.include?('busy') ||
+              e.message.include?('timeout')) && retries.positive?
+            retries -= 1
+            sleep(0.01 * (6 - retries))
+            retry
+          end
+          raise AdapterError, "Failed to #{operation} in ActiveRecord: #{e.message}"
+        rescue StandardError => e
+          raise AdapterError, "Failed to #{operation} in ActiveRecord: #{e.message}"
+        end
+      end
 
       def default_model_class
         return MagickFeature if defined?(MagickFeature)

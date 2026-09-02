@@ -94,6 +94,33 @@ module Magick
         raise AdapterError, "Failed to set all data in Redis: #{e.message}"
       end
 
+      def delete_key(feature_name, key)
+        redis.hdel(key_for(feature_name), key.to_s).to_i.positive?
+      rescue StandardError => e
+        raise AdapterError, "Failed to delete key from Redis: #{e.message}"
+      end
+
+      # Server-side allocation: HSETNX seeds the counter only if it is missing
+      # and HINCRBY is atomic, so every process sharing this Redis is handed a
+      # different number no matter how their calls interleave.
+      def next_sequence(feature_name, key, floor: 0)
+        redis_key = key_for(feature_name)
+        field = key.to_s
+        floor = floor.to_i
+
+        redis.hsetnx(redis_key, field, floor)
+        value = redis.hincrby(redis_key, field, 1).to_i
+        return value if value > floor
+
+        # The counter trailed the history the caller can see (a dump restored
+        # without it, or entries written before there was one). Jump it past the
+        # floor with another atomic increment: concurrent callers doing the same
+        # still come away with distinct numbers.
+        redis.hincrby(redis_key, field, (floor - value) + 1).to_i
+      rescue StandardError => e
+        raise AdapterError, "Failed to allocate sequence in Redis: #{e.message}"
+      end
+
       # Public accessor for the underlying Redis client
       def client
         @redis

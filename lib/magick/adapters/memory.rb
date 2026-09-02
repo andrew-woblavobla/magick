@@ -102,6 +102,32 @@ module Magick
         end
       end
 
+      # Remove one key without touching the rest of the feature's data.
+      def delete_key(feature_name, key)
+        mutex.synchronize do
+          feature_data = store[feature_name.to_s]
+          next false unless feature_data
+
+          !feature_data.delete(key.to_s).nil?
+        end
+      end
+
+      # Atomic within this process: the counter is read, bumped and written
+      # under the same lock, so concurrent threads never share a number. Across
+      # processes each memory adapter is its own store, which is why Versioning
+      # only allocates here when no shared backend is configured.
+      def next_sequence(feature_name, key, floor: 0)
+        mutex.synchronize do
+          cleanup_expired_if_needed
+          feature_name_str = feature_name.to_s
+          counters = (store[feature_name_str] ||= {})
+          value = [counters[key.to_s].to_i, floor.to_i].max + 1
+          counters[key.to_s] = value
+          update_ttl(feature_name_str)
+          value
+        end
+      end
+
       def clear
         mutex.synchronize do
           @store = {}

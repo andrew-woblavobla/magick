@@ -107,6 +107,61 @@ RSpec.describe Magick::Versioning do
       versions = versioning.get_versions(:v_demo).map(&:version)
       expect(versions.sort).to eq((1..50).to_a)
     end
+
+    it 'never assigns the same number twice when two versioning instances share one store' do
+      other = described_class.new(registry)
+      threads = [versioning, other].flat_map do |instance|
+        5.times.map { Thread.new { instance.save_version(:v_demo) } }
+      end
+      threads.each(&:join)
+
+      versions = versioning.get_versions(:v_demo).map(&:version)
+      expect(versions.sort).to eq((1..10).to_a)
+    end
+  end
+
+  describe 'history written by 1.5.0' do
+    let(:store_key) { "#{described_class::STORE_PREFIX}v_demo" }
+    let(:legacy_window) do
+      [1, 2, 3].map do |number|
+        {
+          'version' => number,
+          'feature_data' => { 'name' => 'v_demo', 'value' => number.odd?, 'targeting' => {} },
+          'timestamp' => Time.now.iso8601,
+          'created_by' => nil,
+          'action' => 'set_value'
+        }
+      end
+    end
+
+    before do
+      # 1.5.0 wrote the whole hot window as one JSON list under 'versions'.
+      registry.memory_adapter.set(store_key, 'versions', legacy_window)
+    end
+
+    it 'still reads snapshots stored as the old single-window blob' do
+      expect(versioning.get_versions(:v_demo).map(&:version)).to eq([1, 2, 3])
+    end
+
+    it 'continues numbering above them instead of overwriting them' do
+      expect(versioning.save_version(:v_demo).version).to eq(4)
+      expect(versioning.get_versions(:v_demo).map(&:version)).to eq([1, 2, 3, 4])
+    end
+
+    it 'rolls back to a snapshot written before the upgrade' do
+      Magick.versioning = versioning
+      expect(versioning.rollback(:v_demo, 2)).to be true
+      expect(Magick[:v_demo].enabled?).to be false
+    end
+
+    it 'migrates the blob to one key per version on the next append' do
+      versioning.save_version(:v_demo)
+
+      data = registry.memory_adapter.get_all_data(store_key)
+      expect(data.keys).to include('version_1', 'version_2', 'version_3', 'version_4')
+      expect(data['versions']).to eq([])
+      expect(versioning.get_versions(:v_demo).map(&:version)).to eq([1, 2, 3, 4])
+    end
   end
 
   describe '#rollback' do
