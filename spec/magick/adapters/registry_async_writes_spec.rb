@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
+require 'json'
 
 # Fakes standing in for a Redis adapter + connection. The registry only needs
 # a handful of methods, and going through Magick::Adapters::Memory keeps the
@@ -201,7 +202,12 @@ RSpec.describe Magick::Adapters::Registry, 'async writes' do
 
       registry.shutdown(timeout: 5)
 
-      expect(redis.client.published).to eq(%w[a_flag b_flag])
+      # Invalidation messages are JSON carrying the publishing registry's
+      # identity; what this example pins is that there is one per write and
+      # that they leave in the order the writes were issued.
+      published = redis.client.published.map { |message| JSON.parse(message) }
+      expect(published.map { |message| message['feature'] }).to eq(%w[a_flag b_flag])
+      expect(published.map { |message| message['publisher'] }).to all(eq(registry.publisher_id))
     end
   end
 
