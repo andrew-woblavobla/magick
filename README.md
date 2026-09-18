@@ -976,6 +976,13 @@ The registry automatically falls back from memory to Redis if a feature isn't fo
   only its own messages and always acts on a peer's, so two processes writing the same
   flag moments apart still converge on the shared store's value
 - Targeting updates trigger immediate cache invalidation to ensure consistency
+- Pub/Sub is the fast path, not the guarantee. Every `refresh_interval` seconds
+  (default 30) one evaluation in each process re-reads the flag store in a single
+  bulk query and reloads whatever changed, so a change whose invalidation never
+  arrived — written by a script or an ops tool outside the app, or lost because the
+  Redis user lacks pub/sub permission, a proxy drops SUBSCRIBE, or the subscriber's
+  connection died silently — still reaches every process within that bound. No
+  redeploy is needed to make a toggle take effect. See "Cross-process consistency".
 
 #### Memory-Only Mode
 
@@ -995,6 +1002,53 @@ With Redis configured:
 - ✅ **Isolated from Rails cache** - Use `db: 1` to store feature toggles in a separate Redis database, ensuring they persist even when Rails cache is cleared
 
 **Important:** By default, Magick uses Redis database 1 to avoid conflicts with Rails cache (which typically uses database 0). This ensures that clearing Rails cache (`Rails.cache.clear`) won't affect your feature toggle states.
+
+#### Cross-process consistency
+
+Two mechanisms keep every process on the shared store's value:
+
+1. **Pub/Sub invalidation (fast path).** A write publishes on
+   `magick:cache:invalidate` once Redis has accepted it; every other process
+   reloads that feature within milliseconds.
+2. **Periodic source refresh (the bound).** On every evaluation the registry
+   checks a clock; once `refresh_interval` has elapsed (default 30s) exactly one
+   caller re-reads all features from the shared backend — ActiveRecord first,
+   then Redis — in one bulk query, and reloads the features whose stored state
+   changed since the previous read. Nothing is compared against memory, so a
+   local write that has not reached the store yet is never reverted. Features
+   missing from the source are not evicted (a half-reachable backend must not
+   strip live flags); deleting through the gem publishes an invalidation, which
+   does evict. There is no extra thread: Puma workers, Sidekiq, rake tasks and
+   consoles all behave the same.
+
+```ruby
+Magick.configure do
+  refresh_interval 30      # seconds; the default
+  refresh_interval false   # Pub/Sub only — a missed invalidation stays missed
+end
+
+Magick.refresh!   # re-read the store now, e.g. after changing flags in a console
+# => ["checkout"]  names of the features that changed, nil if no backend answered
+```
+
+Cost: one bulk read per process per interval, paid by one request thread, going
+through the circuit breaker and the client timeouts like any other Redis call.
+
+**Health.** A process that cannot subscribe (Redis ACL without `@pubsub`, a
+proxy that drops SUBSCRIBE) reports it through `Magick::AdapterFailure` in every
+environment — error log plus the `magick.feature_flag.adapter_write_failed`
+event with `operation: "subscribe"` — once immediately, then at most every five
+minutes while it keeps failing, and logs the recovery. For a `/health` endpoint:
+
+```ruby
+Magick.health
+# => { redis: true, active_record: false,
+#      subscriber_running: true,           # thread alive AND SUBSCRIBE acknowledged
+#      subscriber_last_error: nil,         # e.g. "Redis::PermissionError: NOPERM ..."
+#      refresh_interval: 30.0,
+#      last_source_refresh_at: 2026-09-18 12:00:30 +0000,
+#      pending_async_writes: 0 }
+```
 
 #### Async Updates
 

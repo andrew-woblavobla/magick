@@ -82,3 +82,24 @@ to a feature reach Redis in the order they were issued. Avoid: "write pool",
 blocks up to `enqueue_timeout` while the queue is full (backpressure), then
 the write is dropped and logged. Memory, which serves reads, is unaffected.
 Avoid: "retry", "buffer overflow".
+
+**Invalidation (Pub/Sub)** — the message a registry publishes on
+`magick:cache:invalidate` after a write lands in Redis, telling every peer to
+reload that feature from the shared backend. Keyed on the publishing
+registry's identity, so a process ignores only its own echo. The *fast path*
+for cross-process propagation, not the guarantee — see "Source refresh".
+Avoid: "cache bust", "broadcast".
+
+**Source refresh** — the periodic bulk re-read of the shared backend
+(`Registry#refresh_if_stale!` on every evaluation, `#refresh_from_source!` doing
+the work once per `refresh_interval`, default 30s) that bounds how stale a
+process can be when an invalidation never reaches it. Diffs against the
+previous read of the source, never against memory, so a local write in
+flight is not reverted; never evicts. `Magick.refresh!` forces one.
+Avoid: "polling" (nothing polls on a timer — evaluation drives it), "sync".
+
+**Registered feature** — a `Feature` instance held in `Magick.features`
+(`register_feature`, the DSL). It caches its value and targeting in the object,
+so only `Feature#reload` — from an invalidation, a source refresh, or a caller —
+changes what it evaluates to. Contrast with a *transient* instance, which
+`Magick[:name]` builds per call for an unregistered name from the memory cache.

@@ -46,6 +46,9 @@ module Magick
       @_targeting_empty = true # Will be updated after load_from_adapter
       @_rails_events_enabled = false # Cache Rails events availability (only enable in dev)
       @_perf_metrics_enabled = false # Cache performance metrics (disabled by default for speed)
+      # Whether evaluations may ask the registry to re-read the shared backend
+      # (Registry#refresh_if_stale!). A bare adapter, as some specs pass, cannot.
+      @_source_refresh = adapter_registry.respond_to?(:refresh_if_stale!)
 
       validate_type!
       validate_default_value!
@@ -60,6 +63,8 @@ module Magick
     end
 
     def enabled?(context = {})
+      refresh_from_source_if_stale
+
       # Check performance metrics dynamically (in case enabled after feature creation)
       # But cache the check result for performance
       perf_metrics = Magick.performance_metrics
@@ -200,6 +205,8 @@ module Magick
     end
 
     def get_value(context = {})
+      refresh_from_source_if_stale
+
       # Fast path: check targeting rules first (only if targeting exists)
       unless @_targeting_empty
         targeting_result = check_targeting(context)
@@ -568,6 +575,7 @@ module Magick
     end
 
     def get_variant(context = {})
+      refresh_from_source_if_stale
       return nil unless targeting[:variants]
 
       variants = targeting[:variants]
@@ -1102,6 +1110,27 @@ module Magick
       return nil unless raw.is_a?(Array)
 
       raw.map(&:to_s)
+    end
+
+    # Once per refresh interval, one evaluation somewhere in the process pays
+    # for re-reading the shared backend; every other call is a clock compare.
+    # This is what bounds staleness when no Pub/Sub invalidation arrives
+    # (Registry#refresh_if_stale!, ADR-0002).
+    #
+    # The registry reloads the instance registered under each changed name. A
+    # transient instance — Magick[:name] on an unregistered flag builds one per
+    # call — took its state from the cache before the refresh ran, so it
+    # reloads itself when its own name is among the changes.
+    def refresh_from_source_if_stale
+      return unless @_source_refresh
+
+      changed = adapter_registry.refresh_if_stale!
+      return unless changed&.include?(name)
+
+      reload unless Magick.features[name].equal?(self)
+    rescue StandardError
+      # Never let the refresh fail an evaluation; the next interval tries again.
+      nil
     end
 
     def load_value_from_adapter

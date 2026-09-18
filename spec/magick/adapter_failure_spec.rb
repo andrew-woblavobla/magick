@@ -12,6 +12,32 @@ RSpec.describe Magick::AdapterFailure do
     FakeRails.with_event_channel(&block)
   end
 
+  describe '.report_recovery' do
+    it 'logs at info severity that the failure has ended' do
+      with_rails do
+        described_class.report_recovery(backend: :redis, operation: :subscribe)
+      end
+
+      expect(logger.infos).to eq(['Magick: redis subscribe recovered'])
+      expect(logger.errors).to be_empty
+    end
+
+    it 'emits no event' do
+      with_rails do
+        described_class.report_recovery(backend: :redis, operation: :subscribe)
+      end
+
+      expect(event_reporter.events).to be_empty
+    end
+
+    it 'falls back to stderr without Rails' do
+      hide_const('Rails')
+
+      expect { described_class.report_recovery(backend: :redis, operation: :subscribe) }
+        .to output("Magick: redis subscribe recovered\n").to_stderr
+    end
+  end
+
   describe '.report' do
     it 'logs at error severity, not debug or warn' do
       with_rails do

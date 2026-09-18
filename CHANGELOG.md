@@ -32,6 +32,34 @@ archive stops rewriting everything already in it.
 
 ### Fixes
 
+- **A flag change reaches every process without a restart, even when its
+  Pub/Sub invalidation never arrives.** A registered feature caches its value
+  and targeting in the object, and the invalidation message was the only thing
+  that ever reloaded it: a write made outside a gem process (ops tool, script,
+  direct store edit), a Redis user without pub/sub permission, a proxy that
+  drops SUBSCRIBE, or a subscriber connection silently killed by a NAT/LB left
+  every other process serving the old value until redeploy — which is exactly
+  what operators reported. Every evaluation now asks the registry to re-read
+  the shared backend once `refresh_interval` (default 30s) has elapsed; one
+  caller does a single bulk read and reloads the features whose stored state
+  changed since the previous read. Memory is never the comparison, so a local
+  write still in flight is not reverted; features missing from the source are
+  not evicted. Configure with `refresh_interval 30` in the DSL or
+  `registry.refresh_interval = 30`; `false` restores the Pub/Sub-only
+  behavior. `Magick.refresh!` forces a read now. (`Registry#refresh_if_stale!`,
+  `#refresh_from_source!`; see `docs/adr/0002`.)
+
+- **A subscriber that cannot subscribe is no longer silent in production.**
+  The failure is reported through `AdapterFailure` (error log + event,
+  operation `subscribe`) in every environment — first failure at once, then at
+  most once per five minutes while it keeps failing — and the recovery is
+  logged. A subscription that ends without a shutdown is treated as a lost
+  connection and resubscribed instead of leaving a live-looking thread that
+  hears nothing. `Registry#subscriber_running?` is true only while Redis has
+  acknowledged the SUBSCRIBE, and `Magick.health` exposes it together with
+  the last subscriber error, the refresh interval, the time of the last source
+  refresh and the async write backlog, for host health checks.
+
 - **Pub/Sub subscriber shuts down cleanly.** The subscriber thread's early-exit
   guards used `return` inside a block, which raises `LocalJumpError` instead of
   ending the thread. `Registry#shutdown` re-raised it out of `Thread#join`, so

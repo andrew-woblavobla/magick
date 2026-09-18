@@ -175,6 +175,16 @@ module Magick
       @memory_ttl = seconds
     end
 
+    # Seconds between periodic re-reads of the shared backend
+    # (Adapters::Registry::DEFAULT_REFRESH_INTERVAL when unset). This bounds how
+    # stale a process can be when a Pub/Sub invalidation never reaches it.
+    # `false` (or nil / 0) turns the refresh off, leaving Pub/Sub as the only
+    # thing that updates a registered feature.
+    def refresh_interval(seconds)
+      @refresh_interval = seconds
+      @refresh_interval_configured = true
+    end
+
     def warn_on_deprecated(enabled: true)
       @warn_on_deprecated = enabled
     end
@@ -201,6 +211,13 @@ module Magick
     def apply!
       # Apply configuration to Magick module
       Magick.adapter_registry = adapter_registry if adapter_registry
+
+      # Set on whichever registry ends up live, including one built outside
+      # this DSL, and only when the file said something: the registry's own
+      # default must not be stomped by a nil here.
+      if @refresh_interval_configured && Magick.adapter_registry.respond_to?(:refresh_interval=)
+        Magick.adapter_registry.refresh_interval = @refresh_interval
+      end
 
       # Apply performance metrics (preserve redis_tracking setting)
       if performance_metrics

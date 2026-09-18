@@ -242,6 +242,48 @@ RSpec.describe Magick::Adapters::Redis, 'integration', :redis, if: RedisSpecSupp
     end
   end
 
+  # The periodic source refresh is what saves a process whose Pub/Sub leg is
+  # broken or bypassed (ADR-0002). Here the write goes straight into Redis with
+  # a raw HSET — what an ops tool or a script does — so no invalidation is ever
+  # published, and the registered feature still follows within the interval.
+  it 'converges a registered feature on a write that nobody published' do
+    registry = Magick::Adapters::Registry.new(Magick::Adapters::Memory.new,
+                                              described_class.new(RedisSpecSupport.new_client),
+                                              refresh_interval: 0.2)
+    Magick.adapter_registry = registry
+
+    begin
+      client.hset('magick:features:silent_flag', 'value', 'false')
+      Magick.register_feature(:silent_flag)
+      expect(Magick.enabled?(:silent_flag)).to be false
+
+      client.hset('magick:features:silent_flag', 'value', 'true') # no PUBLISH
+      expect(Magick.enabled?(:silent_flag)).to be false # not before the interval
+
+      wait_until(timeout: 3.0) { Magick.enabled?(:silent_flag) }
+      expect(Magick.enabled?(:silent_flag)).to be true
+      expect(registry.health[:last_source_refresh_at]).to be_within(3).of(Time.now)
+    ensure
+      registry.shutdown
+    end
+  end
+
+  it 'knows whether it holds a live subscription' do
+    registry = Magick::Adapters::Registry.new(Magick::Adapters::Memory.new,
+                                              described_class.new(RedisSpecSupport.new_client))
+
+    begin
+      wait_until { registry.subscriber_running? }
+
+      expect(registry.subscriber_running?).to be true
+      expect(registry.health).to include(subscriber_running: true, subscriber_last_error: nil, redis: true)
+    ensure
+      registry.shutdown
+    end
+
+    expect(registry.subscriber_running?).to be false
+  end
+
   # Poll rather than sleep a fixed amount: Pub/Sub delivery is fast but not
   # instantaneous, and a fixed sleep is either flaky or needlessly slow.
   def wait_until(timeout: 2.0)

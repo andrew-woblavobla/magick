@@ -21,7 +21,8 @@ module Magick
   module AdapterFailure
     # backend   — :redis or :active_record
     # operation — the registry operation that failed (:set, :set_all_data,
-    #             :delete, :publish_cache_invalidation, :async_write)
+    #             :delete, :publish_cache_invalidation, :async_write,
+    #             :subscribe, :refresh)
     # error     — the exception that was rescued, when there was one
     # reason    — why the write did not happen, when there was no exception
     #             (e.g. the circuit breaker was open, so the write was dropped)
@@ -34,6 +35,19 @@ module Magick
     rescue StandardError
       # Observability must never break the caller, and never turn a partial
       # write into an exception.
+      nil
+    end
+
+    # The counterpart to .report for a failure that has ended: the Pub/Sub
+    # subscriber that could not subscribe is listening again. Info severity, log
+    # only — the event channel carries failures, and a host that alerted on the
+    # failure sees the recovery in the same log. Never raises.
+    def self.report_recovery(backend:, operation:)
+      message = "Magick: #{backend} #{operation} recovered"
+      logger = rails_logger
+      logger ? logger.info(message) : warn(message)
+      nil
+    rescue StandardError
       nil
     end
 

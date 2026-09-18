@@ -18,8 +18,26 @@ module Magick
       # must not be fed back into Magick.features[...] / feature.reload.
       FEATURE_NAME_PATTERN = /\A[a-zA-Z0-9_\-.:]{1,120}\z/.freeze
 
+      # How long a process may go without re-reading the shared backend. Pub/Sub
+      # is the fast path; this is the bound on staleness when that path is
+      # broken or bypassed — a write made outside a gem process, a Redis user
+      # without pub/sub permission, a proxy that drops SUBSCRIBE, a subscriber
+      # connection silently killed by a NAT/LB. Before it existed, a registered
+      # feature that missed one invalidation stayed stale until restart, and
+      # nothing said so. See ADR-0002.
+      DEFAULT_REFRESH_INTERVAL = 30.0
+
+      # A subscriber that cannot subscribe retries every 5s. The first failure
+      # is reported at once; while it keeps failing, at most one report per this
+      # many seconds, so a permanently broken Redis does not flood the log.
+      SUBSCRIBER_FAILURE_REPORT_INTERVAL = 300.0
+
+      # Seconds between attempts to (re)subscribe after a failure.
+      SUBSCRIBER_RETRY_DELAY = 5
+
       def initialize(memory_adapter, redis_adapter = nil, active_record_adapter: nil, circuit_breaker: nil,
-                     async: false, primary: nil, async_queue_limit: nil, async_enqueue_timeout: nil)
+                     async: false, primary: nil, async_queue_limit: nil, async_enqueue_timeout: nil,
+                     refresh_interval: DEFAULT_REFRESH_INTERVAL)
         @memory_adapter = memory_adapter
         @redis_adapter = redis_adapter
         @active_record_adapter = active_record_adapter
@@ -32,7 +50,15 @@ module Magick
         @primary = primary || :memory # :memory, :redis, or :active_record
         @subscriber_thread = nil
         @subscriber = nil
-        @refresh_thread = nil
+        @subscribed = false
+        @subscriber_last_error = nil
+        @subscriber_failure_reported_at = nil
+        @refresh_interval = normalize_refresh_interval(refresh_interval)
+        @refresh_gate = Mutex.new # claims the once-per-interval slot
+        @source_read_mutex = Mutex.new # serializes the bulk read + apply
+        @last_refresh_at = nil # monotonic; gates the next refresh
+        @last_refresh_time = nil # wall clock; reported by #health
+        @source_snapshot = nil # feature => data as last read from the shared backend
         @stopping = false
         @shutdown_mutex = Mutex.new
         @owner_pid = Process.pid
@@ -328,6 +354,101 @@ module Magick
         publish_cache_invalidation(feature_name)
       end
 
+      # Seconds between periodic re-reads of the shared backend, or nil when the
+      # periodic refresh is off and Pub/Sub is the only thing that updates a
+      # registered feature (the behavior before the periodic refresh existed).
+      attr_reader :refresh_interval
+
+      def refresh_interval=(seconds)
+        @refresh_interval = normalize_refresh_interval(seconds)
+      end
+
+      # Hot-path entry point, called on every feature evaluation. Almost always
+      # a clock read and a comparison; once per interval, in exactly one thread,
+      # it re-reads the shared backend (see #refresh_from_source!). Concurrent
+      # callers skip rather than queue, and the slot is claimed before the read
+      # so a slow or failing source is probed once per interval, not once per
+      # evaluation. Never raises. Returns what #refresh_from_source! returned, or
+      # nil when nothing was done.
+      def refresh_if_stale!
+        interval = @refresh_interval
+        return nil unless interval && source_adapter? && refresh_due?(interval)
+        return nil unless claim_refresh_slot(interval)
+
+        refresh_from_source!
+      rescue StandardError
+        nil
+      end
+
+      # Re-read every feature from the shared backend and bring this process in
+      # line with it: features whose stored data changed since the last read are
+      # written into memory and, when registered here, reloaded. ActiveRecord is
+      # read first (written synchronously on every set), then Redis — the same
+      # source the Admin UI treats as authoritative.
+      #
+      # The comparison is against the *previous read of the source*, not against
+      # memory. A local write in flight (memory ahead of the store, e.g. an async
+      # Redis write still queued) therefore never gets reverted: the source has
+      # not changed, so the feature is left alone, and when the write lands it
+      # shows up as a change whose reload is a no-op. The first read, with no
+      # previous one to compare to, is measured against memory instead.
+      #
+      # Features that vanished from the source are deliberately NOT evicted. A
+      # backend that answers with a partial view (one adapter reachable, the
+      # other not; ActiveRecord half backfilled) must not be able to strip
+      # targeting off live features. Deletion through the gem still publishes an
+      # invalidation, which does evict.
+      #
+      # Returns the names of the features that changed, or nil when no source
+      # answered (nothing is touched in that case). Never raises.
+      def refresh_from_source!
+        return nil unless source_adapter?
+
+        # Serialized so a manual Magick.refresh! racing the scheduled read
+        # cannot interleave two snapshots; the evaluation path never waits here
+        # because #refresh_if_stale! admits one caller per interval.
+        @source_read_mutex.synchronize do
+          data = read_source_features
+          return nil if data.nil?
+
+          changed = changed_since_last_read(data)
+          changed.each do |feature_name|
+            memory_adapter&.set_all_data(feature_name, data[feature_name])
+            reload_registered_feature(feature_name)
+          end
+
+          @source_snapshot = data
+          @last_refresh_time = Time.now
+          changed
+        end
+      rescue StandardError => e
+        AdapterFailure.report(backend: source_backend, operation: :refresh, error: e)
+        nil
+      end
+
+      # True while this process holds a live subscription on the invalidation
+      # channel — the thread is alive AND Redis has acknowledged the SUBSCRIBE.
+      # A thread stuck in the retry loop, or one whose connection was torn down,
+      # answers false.
+      def subscriber_running?
+        @subscribed == true && !@subscriber_thread.nil? && @subscriber_thread.alive?
+      end
+
+      # A snapshot for host health checks: is this process listening for
+      # invalidations, when did it last confirm its view against the shared
+      # backend, and is anything queued. Plain values, safe to render as JSON.
+      def health
+        {
+          redis: redis_available?,
+          active_record: !active_record_adapter.nil?,
+          subscriber_running: subscriber_running?,
+          subscriber_last_error: @subscriber_last_error,
+          refresh_interval: @refresh_interval,
+          last_source_refresh_at: @last_refresh_time,
+          pending_async_writes: pending_async_writes
+        }
+      end
+
       # Check if Redis adapter is available
       def redis_available?
         !redis_adapter.nil?
@@ -409,6 +530,122 @@ module Magick
         adapter.delete_key(feature_name, key)
       rescue StandardError, AdapterError, NotImplementedError
         false
+      end
+
+      # nil, false and anything not positive switch the periodic refresh off.
+      def normalize_refresh_interval(seconds)
+        return nil if seconds.nil? || seconds == false
+
+        value = Float(seconds)
+        value.positive? ? value : nil
+      rescue ArgumentError, TypeError
+        raise ArgumentError, "refresh_interval must be a number of seconds or nil/false, got #{seconds.inspect}"
+      end
+
+      def refresh_due?(interval)
+        last = @last_refresh_at
+        last.nil? || (monotonic_now - last) >= interval
+      end
+
+      # Take the once-per-interval slot without waiting: false when another
+      # thread holds the gate or already took it. Marked before the read, so
+      # every other evaluation for the rest of the interval is a clock compare
+      # whatever the source does.
+      def claim_refresh_slot(interval)
+        return false unless @refresh_gate.try_lock
+
+        begin
+          return false unless refresh_due?(interval)
+
+          @last_refresh_at = monotonic_now
+          true
+        ensure
+          @refresh_gate.unlock
+        end
+      end
+
+      # Names of the features whose source data differs from the previous read
+      # (or, on the first read, from the local cache).
+      def changed_since_last_read(data)
+        previous = @source_snapshot
+        data.keys.reject do |feature_name|
+          before = previous ? previous[feature_name] : memory_adapter&.get_all_data(feature_name)
+          data[feature_name] == before
+        end
+      end
+
+      def monotonic_now
+        Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      end
+
+      # Is there a shared backend to refresh from? Memory alone is this
+      # process's own cache; there is nothing to converge on.
+      def source_adapter?
+        !(redis_adapter.nil? && active_record_adapter.nil?)
+      end
+
+      def source_backend
+        active_record_adapter ? :active_record : :redis
+      end
+
+      # Every feature as the shared backend currently holds it, or nil when no
+      # backend answered. Unlike #load_all_from_source this keeps "the source is
+      # empty" ({}) apart from "the source is unreachable" (nil): a caller that
+      # is about to act on the difference must not mistake an outage for a
+      # store with nothing in it.
+      def read_source_features
+        ar_data = nil
+        if active_record_adapter
+          begin
+            ar_data = load_features_only(active_record_adapter)
+            return ar_data unless ar_data.empty?
+          rescue StandardError, AdapterError
+            ar_data = nil
+          end
+        end
+
+        redis_read { |redis| load_features_only(redis) } || ar_data
+      end
+
+      # Reload the Feature instance registered under this name, if any, so its
+      # in-object state (@stored_value, @targeting, …) matches what the memory
+      # cache now holds. Unregistered features need nothing: the next
+      # Magick[:name] builds a fresh instance from the cache.
+      def reload_registered_feature(feature_name)
+        return false unless defined?(Magick) && Magick.respond_to?(:features)
+
+        feature = Magick.features[feature_name.to_s]
+        return false unless feature.respond_to?(:reload)
+
+        feature.reload
+        true
+      end
+
+      # First failure now, then one report per SUBSCRIBER_FAILURE_REPORT_INTERVAL
+      # while it keeps failing. The last error is always kept for #health, so a
+      # health check can show WHY this process is not listening even between
+      # reports.
+      def report_subscriber_failure(error)
+        # Sanitized like the log line: #health may end up in an HTTP response.
+        @subscriber_last_error = "#{error.class}: #{LogSafe.sanitize(error.message)}"
+        now = monotonic_now
+        reported_at = @subscriber_failure_reported_at
+        return if reported_at && (now - reported_at) < SUBSCRIBER_FAILURE_REPORT_INTERVAL
+
+        @subscriber_failure_reported_at = now
+        AdapterFailure.report(backend: :redis, operation: :subscribe, error: error)
+      end
+
+      # Called when Redis acknowledges the SUBSCRIBE. Says so when the
+      # subscription had previously failed, so the log shows the outage ending
+      # and not just beginning.
+      def note_subscriber_connected
+        @subscribed = true
+        return unless @subscriber_failure_reported_at
+
+        @subscriber_failure_reported_at = nil
+        @subscriber_last_error = nil
+        AdapterFailure.report_recovery(backend: :redis, operation: :subscribe)
       end
 
       # Version snapshots and audit history live under reserved pseudo-feature
@@ -660,12 +897,8 @@ module Magick
         # instance from the shared backend (the publisher writes Redis/AR BEFORE
         # publishing, so fresh data is available by now).
         memory_adapter&.delete(feature_name_str)
-        if defined?(Magick) && Magick.respond_to?(:features) && Magick.features.key?(feature_name_str)
-          feature = Magick.features[feature_name_str]
-          if feature.respond_to?(:reload)
-            feature.reload
-            Rails.logger.debug "Magick: Reloaded '#{feature_name_str}' after cache invalidation" if rails_development?
-          end
+        if reload_registered_feature(feature_name_str) && rails_development?
+          Rails.logger.debug "Magick: Reloaded '#{feature_name_str}' after cache invalidation"
         end
         true
       end
@@ -788,6 +1021,9 @@ module Magick
           end
 
           @subscriber.subscribe(CACHE_INVALIDATION_CHANNEL) do |on|
+            on.subscribe { |_channel, _count| note_subscriber_connected }
+            on.unsubscribe { |_channel, _count| @subscribed = false }
+
             on.message do |_channel, payload|
               process_cache_invalidation(payload)
             rescue StandardError => e
@@ -807,7 +1043,14 @@ module Magick
               end
             end
           end
+          # `subscribe` only returns once the subscription is gone. Outside a
+          # shutdown that means the connection went away underneath us; treat
+          # it like any other failure so the retry below resubscribes instead
+          # of leaving a live-looking thread that hears nothing.
+          @subscribed = false
+          raise AdapterError, 'subscription ended without a shutdown' unless @stopping
         rescue StandardError => e
+          @subscribed = false
           # If subscription fails, log and retry after a delay
           # Skip retrying in test environments or if it's an RSpec mock error
           is_rspec_error = e.class.name&.include?('RSpec') ||
@@ -820,8 +1063,11 @@ module Magick
           # which would keep the process alive and delay termination.
           next if @stopping
 
-          warn "Cache invalidation subscriber error: #{e.message}" if defined?(Rails) && Rails.env.development?
-          sleep 5
+          # Reported in every environment, not just development: a process that
+          # cannot subscribe serves stale flags until something else reloads
+          # them, and until now nothing said so in production.
+          report_subscriber_failure(e)
+          sleep SUBSCRIBER_RETRY_DELAY
           retry unless @stopping
         end
         @subscriber_thread.abort_on_exception = false

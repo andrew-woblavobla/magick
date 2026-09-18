@@ -197,6 +197,29 @@ module Magick
       feature.reload
     end
 
+    # Re-read every feature from the shared backend now, without waiting for
+    # the next scheduled refresh: memory is brought in line and registered
+    # features whose stored state changed are reloaded. For a console or a rake
+    # task that just changed flags behind the gem's back. Returns the names of
+    # the features that changed, or nil when no shared backend answered.
+    def refresh!
+      registry = adapter_registry || default_adapter_registry
+      return nil unless registry.respond_to?(:refresh_from_source!)
+
+      registry.refresh_from_source!
+    end
+
+    # What a host health check wants to know about this process's view of the
+    # flags: whether it is listening for cross-process invalidations, when it
+    # last confirmed its state against the shared backend, and whether async
+    # writes are queued. See Adapters::Registry#health for the keys.
+    def health
+      registry = adapter_registry || default_adapter_registry
+      return {} unless registry.respond_to?(:health)
+
+      registry.health
+    end
+
     def disabled?(feature_name, context = {})
       !enabled?(feature_name, context)
     end
