@@ -146,7 +146,7 @@ module Magick
           end
         rescue StandardError => e
           # Log error but continue processing
-          warn "Magick: Error in async metrics processor: #{e.message}" if defined?(Rails) && Rails.env.development?
+          warn "Magick: Error in async metrics processor: #{e.message}" if defined?(::Rails) && ::Rails.env.development?
           sleep 0.1 # Brief pause on error
         end
       end
@@ -232,14 +232,14 @@ module Magick
           flush_to_redis
         rescue StandardError => e
           # Don't fail if flush fails - the flag is still set
-          if defined?(Rails) && Rails.env.development?
+          if defined?(::Rails) && ::Rails.env.development?
             warn "Magick: Failed to flush stats when enabling Redis tracking: #{e.message}"
           end
         end
       end
 
       # Verify the value was set (for debugging)
-      if !(@redis_enabled == enable) && defined?(Rails) && Rails.env.development?
+      if !(@redis_enabled == enable) && defined?(::Rails) && ::Rails.env.development?
         warn "Magick: Failed to set redis_enabled to #{enable}, current value: #{@redis_enabled}"
       end
 
@@ -434,7 +434,7 @@ module Magick
       rescue StandardError => e
         # Don't break feature checks if stats fail - whatever did not land is
         # restored below and retried on the next flush.
-        warn "Magick: Failed to flush stats to Redis: #{e.message}" if defined?(Rails) && Rails.env.development?
+        warn "Magick: Failed to flush stats to Redis: #{e.message}" if defined?(::Rails) && ::Rails.env.development?
       end
 
       settle_flush(written_counts, unwritten_counts, written_metrics)

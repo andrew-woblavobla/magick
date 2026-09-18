@@ -46,8 +46,15 @@ require_relative 'magick/dsl'
 # Always require Admin UI engine when Rails is detected, so Rails can discover it as a railtie
 # Rails discovers railties during gem loading, not during initialization hooks
 # Users control whether the engine is active by mounting it in their routes file
-if defined?(Rails)
+if defined?(::Rails)
   require_relative 'magick/admin_ui' unless defined?(Magick::AdminUI)
+  # The Railtie is what makes the gem work inside a real Rails process: it
+  # revives the Pub/Sub subscriber in forked Puma workers (SubscriberMiddleware),
+  # preloads the cache at boot and shuts the background threads down at exit.
+  # Until 1.7 nothing required it, so a host using `require: 'magick'` — the
+  # documented setup — ran without any of that, and under `preload_app!` its
+  # workers never heard a single cache invalidation.
+  require_relative 'magick/rails/railtie'
 end
 
 module Magick
@@ -76,7 +83,14 @@ module Magick
 
     # Override adapter_registry setter to auto-enable Redis tracking on existing performance_metrics
     def adapter_registry=(value)
+      previous = @adapter_registry
       @adapter_registry = value
+      # The DSL builds a fresh Registry per `configure`, and the Railtie builds
+      # one before the host's own initializer runs. Each one the host replaces
+      # used to keep its subscriber thread and Redis connection alive for the
+      # life of the process, out of reach of shutdown!. Retire it — writes and
+      # reads through a retired registry still work; only its listener stops.
+      retire_registry(previous) if previous && !previous.equal?(value)
       # Auto-enable Redis tracking if performance_metrics exists and Redis adapter is available
       if performance_metrics && value.is_a?(Adapters::Registry) && value.redis_available?
         performance_metrics.enable_redis_tracking(enable: true)
@@ -444,6 +458,12 @@ module Magick
       changed = targets.reject { |feature| skipped_reasons.key?(feature.name) }
 
       BulkResult.new(targets, changed, skipped_reasons)
+    end
+
+    def retire_registry(registry)
+      return unless registry.respond_to?(:shutdown)
+
+      safely_shutdown(registry) { |r| r.shutdown(timeout: 1) }
     end
 
     # Run a cleanup action on a collaborator, swallowing errors so that

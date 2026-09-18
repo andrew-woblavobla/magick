@@ -284,6 +284,68 @@ RSpec.describe Magick::Adapters::Redis, 'integration', :redis, if: RedisSpecSupp
     expect(registry.subscriber_running?).to be false
   end
 
+  # Puma cluster mode in miniature. The master boots the app — and its
+  # subscriber — then forks. The thread does not survive the fork, so a worker
+  # must start its own (SubscriberMiddleware → ensure_subscriber! on its first
+  # request) or it never hears an invalidation. Every cluster-mode brand ran
+  # exactly that way while the Railtie installing the middleware went unloaded.
+  # `if:` on a nested group REPLACES the outer gate, so the Redis gate has to be
+  # repeated here or these run — and fail — in the plain unit suite.
+  describe 'across a fork', if: RedisSpecSupport.available? && Process.respond_to?(:fork) do
+    let(:memory) { Magick::Adapters::Memory.new }
+    let(:registry) do
+      Magick::Adapters::Registry.new(memory, described_class.new(RedisSpecSupport.new_client), refresh_interval: false)
+    end
+    let(:peer) { Magick::Adapters::Registry.new(Magick::Adapters::Memory.new, described_class.new(RedisSpecSupport.new_client)) }
+
+    after do
+      registry.shutdown
+      peer.shutdown
+    end
+
+    it 'a worker that runs ensure_subscriber! receives a peer invalidation' do
+      Magick.adapter_registry = registry
+      client.hset('magick:features:forked_flag', 'value', 'false')
+      Magick.register_feature(:forked_flag)
+      wait_until { registry.subscriber_running? }
+
+      reader, writer = IO.pipe
+      pid = fork do
+        reader.close
+        registry.ensure_subscriber! # what the middleware does on the worker's first request
+        wait_until(timeout: 3.0) { registry.subscriber_running? }
+        writer.puts(registry.subscriber_running?)
+        wait_until(timeout: 3.0) { Magick.enabled?(:forked_flag) }
+        writer.puts(Magick.enabled?(:forked_flag))
+        writer.close
+        exit!(0) # not `exit`: the child must not run the parent's at_exit hooks (RSpec's runner)
+      end
+      writer.close
+
+      expect(reader.gets.chomp).to eq('true') # the worker is listening on its own connection
+      peer.set(:forked_flag, 'value', true) # another process toggles through the gem
+      expect(reader.gets.chomp).to eq('true') # ...and the worker saw it
+      Process.wait(pid)
+    end
+
+    it 'a child shutting down does not end the parent subscription it inherited' do
+      wait_until { registry.subscriber_running? }
+
+      pid = fork do
+        registry.shutdown(timeout: 1) # e.g. at_exit in a worker that never served a request
+        exit!(0)
+      end
+      Process.wait(pid)
+
+      memory.set(:parent_flag, 'value', 'stale')
+      peer.set(:parent_flag, 'value', 'fresh')
+      wait_until { memory.get(:parent_flag, 'value').nil? }
+
+      expect(registry.subscriber_running?).to be true
+      expect(registry.get(:parent_flag, 'value')).to eq('fresh')
+    end
+  end
+
   # Poll rather than sleep a fixed amount: Pub/Sub delivery is fast but not
   # instantaneous, and a fixed sleep is either flaky or needlessly slow.
   def wait_until(timeout: 2.0)

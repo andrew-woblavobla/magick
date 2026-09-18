@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-if defined?(Rails)
+if defined?(::Rails)
   # Ensure magick is loaded (in case auto-require didn't work)
   require 'magick' unless defined?(Magick)
   # DSL is already loaded by magick.rb, but ensure it's available
@@ -51,7 +51,7 @@ if defined?(Rails)
                     Magick.performance_metrics.enable_redis_tracking(enable: true)
                   end
                 rescue StandardError => e
-                  Rails.logger&.warn "Magick: Failed to initialize Redis adapter: #{e.message}. Using memory-only adapter."
+                  ::Rails.logger&.warn "Magick: Failed to initialize Redis adapter: #{e.message}. Using memory-only adapter."
                   # Still set up memory adapter even if Redis fails
                   memory_adapter = Adapters::Memory.new
                   magick.adapter_registry = Adapters::Registry.new(memory_adapter, nil)
@@ -79,7 +79,7 @@ if defined?(Rails)
               Magick.performance_metrics.enable_redis_tracking(enable: true)
               # Double-check it was enabled (for debugging)
               unless Magick.performance_metrics.redis_enabled
-                Rails.logger&.warn 'Magick: Failed to enable Redis tracking despite Redis adapter being available'
+                ::Rails.logger&.warn 'Magick: Failed to enable Redis tracking despite Redis adapter being available'
               end
             end
           end
@@ -91,12 +91,12 @@ if defined?(Rails)
             # definition_mode suppresses audit/version recording: boot replays
             # the declarative definitions in every container, and recording
             # those would flood history with identical snapshots.
-            features_file = Rails.root.join('config', 'features.rb')
+            features_file = ::Rails.root.join('config', 'features.rb')
             if File.exist?(features_file)
               Magick.definition_mode { load features_file }
             else
               # Fallback to config/initializers/features.rb (already loaded by Rails, but check anyway)
-              initializer_file = Rails.root.join('config', 'initializers', 'features.rb')
+              initializer_file = ::Rails.root.join('config', 'initializers', 'features.rb')
               if File.exist?(initializer_file) && !defined?(Magick::Rails::FeaturesLoaded)
                 # Only load if not already loaded (Rails may have already loaded it)
                 Magick.definition_mode { load initializer_file }
@@ -112,9 +112,9 @@ if defined?(Rails)
             # instead of N queries per feature on first access
             begin
               Magick.preload!
-              Rails.logger&.info "Magick: Preloaded #{Magick.features.size} features into memory cache"
+              ::Rails.logger&.info "Magick: Preloaded #{Magick.features.size} features into memory cache"
             rescue StandardError => e
-              Rails.logger&.warn "Magick: Failed to preload features: #{e.message}"
+              ::Rails.logger&.warn "Magick: Failed to preload features: #{e.message}"
             end
           end
         end
@@ -157,25 +157,30 @@ if defined?(Rails)
           end
         end
       end
-    end
 
-    # Ensures each process (including Puma workers forked under `preload_app!`)
-    # has a live Redis Pub/Sub subscriber for cross-process cache invalidation.
-    # `ensure_subscriber!` returns immediately once `@owner_pid == Process.pid`,
-    # so the per-request cost is a single pid comparison after the first call.
-    class SubscriberMiddleware
-      def initialize(app)
-        @app = app
-      end
-
-      def call(env)
-        begin
-          registry = Magick.adapter_registry
-          registry.ensure_subscriber! if registry.respond_to?(:ensure_subscriber!)
-        rescue StandardError
-          # Best-effort: never break a request over subscriber bookkeeping.
+      # Ensures each process (including Puma workers forked under `preload_app!`)
+      # has a live Redis Pub/Sub subscriber for cross-process cache invalidation.
+      # `ensure_subscriber!` returns immediately once `@owner_pid == Process.pid`,
+      # so the per-request cost is a single pid comparison after the first call.
+      #
+      # Inside `module Rails` on purpose: the initializer above installs
+      # `Magick::Rails::SubscriberMiddleware`, and this class used to sit one
+      # level up as `Magick::SubscriberMiddleware`, so the first boot that
+      # actually loaded this file raised NameError.
+      class SubscriberMiddleware
+        def initialize(app)
+          @app = app
         end
-        @app.call(env)
+
+        def call(env)
+          begin
+            registry = Magick.adapter_registry
+            registry.ensure_subscriber! if registry.respond_to?(:ensure_subscriber!)
+          rescue StandardError
+            # Best-effort: never break a request over subscriber bookkeeping.
+          end
+          @app.call(env)
+        end
       end
     end
   end

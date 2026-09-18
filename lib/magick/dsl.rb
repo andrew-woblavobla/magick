@@ -125,5 +125,5 @@ begin
   end
 rescue StandardError => e
   # Silently fail if Object isn't available yet (shouldn't happen, but be safe)
-  warn "Magick: Failed to include DSL: #{e.message}" if defined?(Rails) && Rails.env.development?
+  warn "Magick: Failed to include DSL: #{e.message}" if defined?(::Rails) && ::Rails.env.development?
 end

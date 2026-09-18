@@ -152,7 +152,7 @@ module Magick
       rescue Magick::InvalidTargetingError => e
         redirect_to magick_admin_ui.feature_path(@feature.name), alert: "Invalid targeting: #{e.message}"
       rescue StandardError => e
-        Rails.logger.error "Magick: Error updating targeting for #{@feature.name}: #{e.class}: #{e.message}\n#{e.backtrace.first(5).join("\n")}" if defined?(Rails)
+        ::Rails.logger.error "Magick: Error updating targeting for #{@feature.name}: #{e.class}: #{e.message}\n#{e.backtrace.first(5).join("\n")}" if defined?(::Rails)
         redirect_to magick_admin_ui.feature_path(@feature.name), alert: 'Could not update targeting — see server logs for details.'
       end
 
@@ -186,7 +186,7 @@ module Magick
 
         redirect_to magick_admin_ui.feature_path(@feature.name), notice: 'Variants updated successfully'
       rescue StandardError => e
-        Rails.logger.error "Magick: Error updating variants for #{@feature.name}: #{e.class}: #{e.message}" if defined?(Rails)
+        ::Rails.logger.error "Magick: Error updating variants for #{@feature.name}: #{e.class}: #{e.message}" if defined?(::Rails)
         redirect_to magick_admin_ui.feature_path(@feature.name), alert: 'Could not update variants — see server logs for details.'
       end
 
@@ -249,7 +249,7 @@ module Magick
           resolver = Magick::AdminUI.config.current_actor
           resolver.respond_to?(:call) ? resolver.call(self) : nil
         rescue StandardError => e
-          Rails.logger.warn "Magick: current_actor hook failed: #{e.class}: #{e.message}" if defined?(Rails)
+          ::Rails.logger.warn "Magick: current_actor hook failed: #{e.class}: #{e.message}" if defined?(::Rails)
           nil
         end
 
@@ -272,7 +272,7 @@ module Magick
         registry.refresh_all_from_source if registry.respond_to?(:refresh_all_from_source)
         Magick.features.each_value { |f| f.reload if f.respond_to?(:reload) }
       rescue StandardError => e
-        Rails.logger.warn "Magick: admin source refresh failed: #{e.class}: #{e.message}" if defined?(Rails)
+        ::Rails.logger.warn "Magick: admin source refresh failed: #{e.class}: #{e.message}" if defined?(::Rails)
       end
 
       # Refresh the single feature being viewed/edited from the shared backend.
@@ -281,7 +281,7 @@ module Magick
 
         @feature.reload_from_source! if @feature.respond_to?(:reload_from_source!)
       rescue StandardError => e
-        Rails.logger.warn "Magick: admin source refresh failed: #{e.class}: #{e.message}" if defined?(Rails)
+        ::Rails.logger.warn "Magick: admin source refresh failed: #{e.class}: #{e.message}" if defined?(::Rails)
       end
 
       def set_feature

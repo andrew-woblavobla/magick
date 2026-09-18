@@ -24,7 +24,7 @@ module Magick
         return unless Events.rails81?
 
         full_event_name = Events::EVENTS[event_name] || event_name.to_s
-        Rails.event.subscribe(full_event_name, self)
+        ::Rails.event.subscribe(full_event_name, self)
       end
 
       # Implement the emit method required by Rails 8.1 event system
@@ -37,7 +37,7 @@ module Magick
 
       def handle_event(event)
         # Default handler - users can override
-        Rails.logger&.info "Magick Event: #{event[:name]} - #{event[:payload].inspect}"
+        ::Rails.logger&.info "Magick Event: #{event[:name]} - #{event[:payload].inspect}"
       end
     end
 
@@ -48,7 +48,7 @@ module Magick
         source_location = event[:source_location]
         log = "[#{event[:name]}] #{payload}"
         log += " at #{source_location[:filepath]}:#{source_location[:lineno]}" if source_location
-        Rails.logger&.info(log)
+        ::Rails.logger&.info(log)
       end
     end
   end

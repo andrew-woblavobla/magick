@@ -221,7 +221,7 @@ module Magick
       end
 
       def rails_development?
-        defined?(Rails) && Rails.respond_to?(:env) && Rails.env.development?
+        defined?(::Rails) && ::Rails.respond_to?(:env) && ::Rails.env.development?
       end
     end
 
@@ -309,7 +309,7 @@ module Magick
     def persist(entry, recent)
       store&.write(entry, recent)
     rescue StandardError => e
-      if defined?(Rails) && Rails.respond_to?(:env) && Rails.env.development?
+      if defined?(::Rails) && ::Rails.respond_to?(:env) && ::Rails.env.development?
         warn "Magick: failed to persist audit entry: #{Magick::LogSafe.sanitize(e.message)}"
       end
     end

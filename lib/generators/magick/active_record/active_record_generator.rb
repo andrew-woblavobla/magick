@@ -2,8 +2,8 @@
 
 module Magick
   module Generators
-    class ActiveRecordGenerator < Rails::Generators::Base
-      include Rails::Generators::Migration
+    class ActiveRecordGenerator < ::Rails::Generators::Base
+      include ::Rails::Generators::Migration
 
       source_root File.expand_path('templates', __dir__)
 

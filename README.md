@@ -20,7 +20,7 @@ A performant and memory-efficient feature toggle gem for Ruby and Rails applicat
 Add this line to your application's Gemfile:
 
 ```ruby
-gem 'magick'
+gem 'magick-feature-flags', require: 'magick'
 ```
 
 And then execute:
@@ -32,8 +32,15 @@ $ bundle install
 Or install it yourself as:
 
 ```bash
-$ gem install magick
+$ gem install magick-feature-flags
 ```
+
+In a Rails app, `require 'magick'` also loads the gem's Railtie (since 1.7.0 —
+before that it had to be required explicitly as `magick/rails`, and nothing said
+so). The Railtie is what makes the gem work in a real Rails process: it installs
+the fork-aware `Magick::Rails::SubscriberMiddleware` so Puma cluster-mode
+workers listen for cross-process invalidations, preloads the cache at boot, and
+shuts the background threads down at exit. See "Graceful Shutdown".
 
 ## Setup
 

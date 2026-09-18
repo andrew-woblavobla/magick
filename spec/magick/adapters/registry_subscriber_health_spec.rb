@@ -197,4 +197,94 @@ RSpec.describe Magick::Adapters::Registry, 'subscriber health' do
 
     expect(Magick::AdapterFailure).not_to have_received(:report)
   end
+
+  # Reconfiguring Redis (`redis url: ...` after a registry exists, or a dev
+  # reload) used to start a second subscriber over the first, which stayed
+  # blocked on the old server's subscription forever and out of reach of
+  # shutdown — a thread and a connection leaked per reconfigure.
+  describe '#redis_adapter=' do
+    it 'retires the subscriber on the previous adapter and listens on the new one' do
+      old_client = SubscriberHealthSpec::ScriptedClient.new
+      new_client = SubscriberHealthSpec::ScriptedClient.new
+      registry = start(old_client)
+      old_client.wait_connected
+      old_thread = registry.instance_variable_get(:@subscriber_thread)
+
+      registry.redis_adapter = SubscriberHealthSpec::FakeRedisAdapter.new(new_client)
+      new_client.wait_connected
+      wait_until { registry.subscriber_running? }
+
+      expect(old_thread).not_to be_alive
+      expect(registry.subscriber_running?).to be true
+      expect(registry.redis_adapter.client).to equal(new_client)
+      expect(Magick::AdapterFailure).not_to have_received(:report) # a retirement is not a failure
+    ensure
+      registry&.shutdown(timeout: 1)
+    end
+
+    it 'lets a subscriber stuck in the retry loop go instead of leaking it' do
+      failing = SubscriberHealthSpec::ScriptedClient.failing
+      registry = start(failing)
+      wait_until { failing.attempts >= 2 }
+      old_thread = registry.instance_variable_get(:@subscriber_thread)
+
+      registry.redis_adapter = SubscriberHealthSpec::FakeRedisAdapter.new(SubscriberHealthSpec::ScriptedClient.new)
+      wait_until { !old_thread.alive? }
+      attempts_after_retire = failing.attempts
+      sleep 0.05
+
+      expect(old_thread).not_to be_alive
+      expect(failing.attempts).to eq(attempts_after_retire)
+      expect(registry.stopping?).to be false # retiring one subscriber is not a shutdown
+    ensure
+      registry&.shutdown(timeout: 1)
+    end
+  end
+
+  describe 'idempotent start' do
+    it 'does not stack a second listener when asked to start while one is running' do
+      client = SubscriberHealthSpec::ScriptedClient.new
+      registry = start(client)
+      client.wait_connected
+
+      registry.send(:start_cache_invalidation_subscriber)
+      registry.send(:start_cache_invalidation_subscriber)
+      sleep 0.05
+
+      expect(client.attempts).to eq(1)
+    ensure
+      registry&.shutdown(timeout: 1)
+    end
+  end
+
+  # The DSL builds a fresh Registry per `configure`, and the Railtie builds one
+  # before the host's initializer runs. The one being replaced must not keep a
+  # listener alive for the rest of the process.
+  describe 'Magick.adapter_registry=' do
+    it 'retires the registry it replaces' do
+      client = SubscriberHealthSpec::ScriptedClient.new
+      replaced = start(client)
+      client.wait_connected
+      Magick.adapter_registry = replaced
+
+      Magick.adapter_registry = described_class.new(Magick::Adapters::Memory.new)
+
+      expect(replaced.stopping?).to be true
+      expect(replaced.subscriber_running?).to be false
+    end
+
+    it 'does nothing when the same registry is assigned again' do
+      client = SubscriberHealthSpec::ScriptedClient.new
+      registry = start(client)
+      client.wait_connected
+      Magick.adapter_registry = registry
+
+      Magick.adapter_registry = registry
+
+      expect(registry.stopping?).to be false
+      expect(registry.subscriber_running?).to be true
+    ensure
+      registry&.shutdown(timeout: 1)
+    end
+  end
 end

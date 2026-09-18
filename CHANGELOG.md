@@ -49,6 +49,38 @@ archive stops rewriting everything already in it.
   behavior. `Magick.refresh!` forces a read now. (`Registry#refresh_if_stale!`,
   `#refresh_from_source!`; see `docs/adr/0002`.)
 
+- **The Railtie is loaded by `require 'magick'`.** It never was: only an
+  explicit `require 'magick/rails'`, which nothing documented, loaded
+  `Magick::Rails::Railtie`. Every host using the documented
+  `gem 'magick-feature-flags', require: 'magick'` therefore ran without the
+  fork-aware `SubscriberMiddleware`, the boot-time `preload!` and the `at_exit`
+  shutdown — and under Puma `preload_app!` its forked workers inherited a dead
+  subscriber thread that nothing ever restarted, so a toggle reached only the
+  worker that served the write. The Railtie had also never been booted: its
+  middleware class sat one namespace up (`Magick::SubscriberMiddleware`), so
+  the first boot raised `NameError`, and every bare `Rails.` inside
+  `module Magick` resolved to the gem's own `Magick::Rails` namespace once
+  that was loaded. All references now spell `::Rails`, a spec boots a real app
+  with the Railtie in a child process, and a static spec keeps the bare
+  references out.
+
+- **A forked child no longer ends its parent's subscription.** After a fork
+  the child holds the parent's subscriber connection object and shares its
+  socket; `Registry#shutdown` from the child (an `at_exit` in a worker that
+  never served a request) sent UNSUBSCRIBE over the parent's connection and
+  silently killed the master's listener. A connection opened by another
+  process is now dropped, never closed.
+
+- **Reconfiguring Redis retires the previous subscriber.** `redis url: ...`
+  after a registry exists (the DSL with `active_record` listed first, or a
+  dev reload) started a second subscriber over the first, which stayed
+  blocked on the old subscription out of reach of shutdown. New
+  `Registry#redis_adapter=` stops the running subscriber before swapping;
+  `Magick.adapter_registry=` retires the registry it replaces (the Railtie's
+  default one, the previous `configure`'s); starting a subscriber while one
+  is alive is a no-op. Subscriber threads carry a generation so a retired one
+  lets go of its retry loop instead of leaking.
+
 - **A subscriber that cannot subscribe is no longer silent in production.**
   The failure is reported through `AdapterFailure` (error log + event,
   operation `subscribe`) in every environment — first failure at once, then at

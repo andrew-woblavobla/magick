@@ -33,12 +33,32 @@ RSpec.describe Magick::Adapters::Registry, '#shutdown' do
 
     registry.instance_variable_set(:@subscriber_thread, thread)
     registry.instance_variable_set(:@subscriber, fake_subscriber)
+    registry.instance_variable_set(:@subscriber_pid, Process.pid) # opened by this process
 
     registry.shutdown(timeout: 2)
 
     expect(thread.alive?).to be false
     expect(fake_subscriber).to have_received(:unsubscribe)
     expect(fake_subscriber).to have_received(:close)
+  end
+
+  # After a fork the child holds the parent's connection object and shares its
+  # socket. An UNSUBSCRIBE from the child would end the PARENT's subscription —
+  # a Puma worker exiting before its first request used to kill the master's
+  # listener this way. The child must drop the reference and nothing more.
+  it 'does not unsubscribe or close a connection inherited from a parent process' do
+    registry = described_class.new(memory_adapter)
+    inherited = instance_double('FakeRedisConnection')
+    allow(inherited).to receive(:unsubscribe)
+    allow(inherited).to receive(:close)
+    registry.instance_variable_set(:@subscriber, inherited)
+    registry.instance_variable_set(:@subscriber_pid, Process.pid - 1) # opened by the parent
+
+    registry.shutdown(timeout: 1)
+
+    expect(inherited).not_to have_received(:unsubscribe)
+    expect(inherited).not_to have_received(:close)
+    expect(registry.instance_variable_get(:@subscriber)).to be_nil
   end
 
   it 'force-kills the subscriber thread if it refuses to exit within the timeout' do

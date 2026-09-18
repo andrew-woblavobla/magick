@@ -15,7 +15,7 @@ module Magick
       @circuit_breaker_timeout = 60
       @redis_namespace = 'magick:features'
       @redis_db = nil # Use default database (0) unless specified
-      @environment = defined?(Rails) ? Rails.env.to_s : 'development'
+      @environment = defined?(::Rails) ? ::Rails.env.to_s : 'development'
     end
 
     # DSL methods for configuration
@@ -55,10 +55,9 @@ module Magick
         # If registry already exists, update it with the new Redis adapter
         # This allows reconfiguring Redis without recreating the registry
         if redis_adapter && @adapter_registry.is_a?(Adapters::Registry)
-          # Update the Redis adapter in the existing registry
-          @adapter_registry.instance_variable_set(:@redis_adapter, redis_adapter)
-          # Restart cache invalidation subscriber with new Redis adapter
-          @adapter_registry.send(:start_cache_invalidation_subscriber) if redis_adapter
+          # Swap the Redis adapter; the registry retires the subscriber that was
+          # listening on the previous one before starting a new one.
+          @adapter_registry.redis_adapter = redis_adapter
         end
       else
         memory_adapter = configure_memory_adapter
@@ -336,7 +335,7 @@ module Magick
       model_class ||= @active_record_model_class
       Adapters::ActiveRecord.new(model_class: model_class)
     rescue StandardError => e
-      if defined?(Rails) && Rails.env.development?
+      if defined?(::Rails) && ::Rails.env.development?
         warn "Magick: Failed to initialize ActiveRecord adapter: #{e.message}"
       end
       nil

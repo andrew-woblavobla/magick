@@ -50,6 +50,8 @@ module Magick
         @primary = primary || :memory # :memory, :redis, or :active_record
         @subscriber_thread = nil
         @subscriber = nil
+        @subscriber_pid = nil # process that opened @subscriber; a fork must not touch its parent's
+        @subscriber_generation = 0 # bumped to retire a running subscriber (reconfigure, shutdown)
         @subscribed = false
         @subscriber_last_error = nil
         @subscriber_failure_reported_at = nil
@@ -80,13 +82,27 @@ module Magick
         @shutdown_mutex.synchronize do
           return if @owner_pid == Process.pid
 
+          # The thread did not survive the fork and the connection object is the
+          # parent's: dropped, never closed (see #close_subscriber_connection).
           @subscriber_thread = nil
           @subscriber = nil
+          @subscribed = false
           @owner_pid = Process.pid
           @stopping = false
         end
 
         start_cache_invalidation_subscriber if redis_adapter
+      end
+
+      # Swap the Redis adapter of a live registry — what `redis url: ...` in the
+      # configuration DSL does when a registry already exists. The running
+      # subscriber is retired first, so reconfiguring (or a dev reload) does not
+      # leave a thread blocked on a subscription to the previous server, out of
+      # reach of #shutdown, plus a Redis connection per reconfigure.
+      def redis_adapter=(adapter)
+        stop_subscriber!(timeout: 1)
+        @redis_adapter = adapter
+        start_cache_invalidation_subscriber if adapter
       end
 
       # Gracefully terminate the Pub/Sub subscriber thread and its Redis connection.
@@ -101,11 +117,7 @@ module Magick
         # Drain queued writes while the Redis connection is still usable.
         drain_async_writer(timeout)
 
-        close_subscriber_connection(@subscriber)
-        terminate_subscriber_thread(@subscriber_thread, timeout)
-
-        @subscriber = nil
-        @subscriber_thread = nil
+        stop_subscriber!(timeout: timeout)
         true
       end
 
@@ -690,6 +702,12 @@ module Magick
       # retry/reconnect attempt fails fast instead of sleeping for 5s.
       def close_subscriber_connection(subscriber)
         return unless subscriber
+        # After a fork the child holds the parent's connection object, and its
+        # socket. UNSUBSCRIBE/close from here would go out over the PARENT's
+        # subscription and end it — a Puma worker exiting before its first
+        # request used to kill the master's subscriber this way. Drop the
+        # reference; the parent owns the socket.
+        return unless @subscriber_pid == Process.pid
 
         begin
           subscriber.unsubscribe(CACHE_INVALIDATION_CHANNEL)
@@ -702,6 +720,30 @@ module Magick
         rescue StandardError
           # ignore: best-effort close
         end
+      end
+
+      # Retire the running subscriber: its generation is invalidated so the
+      # thread's retry loop lets go, its subscription is closed and the thread
+      # joined (or killed after +timeout+). Does not touch @stopping, so a
+      # retired subscriber can be followed by a new one (#redis_adapter=).
+      def stop_subscriber!(timeout:)
+        thread = @subscriber_thread
+        subscriber = @subscriber
+        @subscriber_generation += 1
+        @subscribed = false
+        return unless thread || subscriber
+
+        close_subscriber_connection(subscriber)
+        terminate_subscriber_thread(thread, timeout)
+
+        @subscriber = nil
+        @subscriber_thread = nil
+      end
+
+      # A subscriber thread keeps going only while it is the current generation
+      # and the registry is not shutting down.
+      def subscriber_retired?(generation)
+        @stopping || generation != @subscriber_generation
       end
 
       def terminate_subscriber_thread(thread, timeout)
@@ -889,7 +931,7 @@ module Magick
         # could revert it to pre-write data (async writes publish after the Redis
         # write). Only OUR messages are dropped here.
         if publisher == publisher_id
-          Rails.logger.debug "Magick: Ignoring own invalidation for '#{feature_name_str}'" if rails_development?
+          ::Rails.logger.debug "Magick: Ignoring own invalidation for '#{feature_name_str}'" if rails_development?
           return false
         end
 
@@ -898,13 +940,13 @@ module Magick
         # publishing, so fresh data is available by now).
         memory_adapter&.delete(feature_name_str)
         if reload_registered_feature(feature_name_str) && rails_development?
-          Rails.logger.debug "Magick: Reloaded '#{feature_name_str}' after cache invalidation"
+          ::Rails.logger.debug "Magick: Reloaded '#{feature_name_str}' after cache invalidation"
         end
         true
       end
 
       def rails_development?
-        defined?(Rails) && Rails.respond_to?(:env) && Rails.env.development?
+        defined?(::Rails) && ::Rails.respond_to?(:env) && ::Rails.env.development?
       end
 
       # Read a feature's full data from the shared, authoritative backend,
@@ -993,8 +1035,13 @@ module Magick
 
         # Skip subscriber in test environments to avoid RSpec mock conflicts
         # In tests, cache invalidation across processes isn't needed anyway
-        return if defined?(Rails) && Rails.env.test?
+        return if defined?(::Rails) && ::Rails.env.test?
+        # Idempotent: per-request callers (SubscriberMiddleware, to_prepare) and
+        # dev reloads must not stack listeners.
+        return if @subscriber_thread&.alive?
 
+        generation = @subscriber_generation
+        @subscriber_pid = Process.pid
         @subscriber_thread = Thread.new do
           redis_client = redis_adapter.client
           # `next`, not `return`: `return` from a block raises LocalJumpError,
@@ -1013,7 +1060,7 @@ module Magick
             is_rspec_error = e.class.name&.include?('RSpec') ||
                              e.message&.include?('stub') ||
                              e.message&.include?('mock') ||
-                             (defined?(Rails) && Rails.env.test?)
+                             (defined?(::Rails) && ::Rails.env.test?)
             next if is_rspec_error
 
             # Re-raise in non-test environments for unexpected errors
@@ -1021,7 +1068,7 @@ module Magick
           end
 
           @subscriber.subscribe(CACHE_INVALIDATION_CHANNEL) do |on|
-            on.subscribe { |_channel, _count| note_subscriber_connected }
+            on.subscribe { |_channel, _count| note_subscriber_connected unless subscriber_retired?(generation) }
             on.unsubscribe { |_channel, _count| @subscribed = false }
 
             on.message do |_channel, payload|
@@ -1032,13 +1079,13 @@ module Magick
               is_rspec_error = e.class.name&.include?('RSpec') ||
                                e.message&.include?('stub') ||
                                e.message&.include?('mock') ||
-                               (defined?(Rails) && Rails.env.test?)
+                               (defined?(::Rails) && ::Rails.env.test?)
               if is_rspec_error
                 # Silently ignore errors in test environments
                 next
               end
 
-              if defined?(Rails) && Rails.env.development?
+              if defined?(::Rails) && ::Rails.env.development?
                 warn "Magick: Error processing cache invalidation for '#{Magick::LogSafe.sanitize(payload)}': #{Magick::LogSafe.sanitize(e.message)}"
               end
             end
@@ -1048,7 +1095,7 @@ module Magick
           # it like any other failure so the retry below resubscribes instead
           # of leaving a live-looking thread that hears nothing.
           @subscribed = false
-          raise AdapterError, 'subscription ended without a shutdown' unless @stopping
+          raise AdapterError, 'subscription ended without a shutdown' unless subscriber_retired?(generation)
         rescue StandardError => e
           @subscribed = false
           # If subscription fails, log and retry after a delay
@@ -1056,19 +1103,20 @@ module Magick
           is_rspec_error = e.class.name&.include?('RSpec') ||
                            e.message&.include?('stub') ||
                            e.message&.include?('mock') ||
-                           (defined?(Rails) && Rails.env.test?)
+                           (defined?(::Rails) && ::Rails.env.test?)
           next if is_rspec_error
 
-          # Stop cleanly during app shutdown instead of sleeping + retrying,
-          # which would keep the process alive and delay termination.
-          next if @stopping
+          # Stop cleanly during app shutdown (or when this subscriber was
+          # retired by a reconfigure) instead of sleeping + retrying, which
+          # would keep the process alive and delay termination.
+          next if subscriber_retired?(generation)
 
           # Reported in every environment, not just development: a process that
           # cannot subscribe serves stale flags until something else reloads
           # them, and until now nothing said so in production.
           report_subscriber_failure(e)
           sleep SUBSCRIBER_RETRY_DELAY
-          retry unless @stopping
+          retry unless subscriber_retired?(generation)
         end
         @subscriber_thread.abort_on_exception = false
       end
