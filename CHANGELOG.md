@@ -4,6 +4,37 @@ All notable changes to `magick-feature-flags` are documented in this file.
 
 ## Unreleased
 
+## 1.7.0 — 2026-09-18
+
+### Upgrading
+
+- **Toggles no longer need a restart to reach every process.** Two things
+  changed for a Rails host: `require 'magick'` now loads the Railtie (so Puma
+  cluster-mode workers start their own Pub/Sub subscriber on their first
+  request), and every evaluation asks the registry to re-read the shared
+  backend once `refresh_interval` (default 30s) has elapsed. Ops tooling that
+  restarts after a flag write can stop doing so once the fleet runs 1.7.0.
+- **First refresh after boot converges on ActiveRecord.** Where ActiveRecord
+  and Redis disagree for a flag, evaluation follows ActiveRecord — the same
+  source the Admin UI already treats as truth. Redis copies written by a pre-JSON
+  serializer (`targeting` as a `Marshal` blob) count as a difference and are
+  rewritten once, without any flag changing its answer.
+- **Set `refresh_interval false`** in the configuration DSL to keep the
+  Pub/Sub-only behaviour.
+- **The Railtie's own initializers now run** in every host that had not
+  required it explicitly: a default registry is built before your initializer
+  (and retired when yours replaces it), `config/features.rb` is loaded in
+  `Magick.definition_mode`, the cache is preloaded after initialization, and
+  `Magick.shutdown!` runs at exit. `config/initializers/features.rb` is left
+  to Rails (the Railtie used to load it a second time); wrap definitions kept
+  there in `Magick.definition_mode { }` yourself if you want boot replays kept
+  out of the audit log.
+- In the configuration DSL, list `redis`/`active_record` before the options
+  that shape the registry (`async_updates`, `memory_ttl`, `circuit_breaker`):
+  the registry is built at the first adapter call, and options given after it
+  do not apply to it. `refresh_interval` is applied afterwards and is
+  order-independent.
+
 ### Security
 
 - **Config**: `ConfigDSL.load_from_file` now checks containment against the
